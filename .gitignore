@@ -9,3 +9,4 @@ venv/
 *.db
 *.sqlite
 .pytest_cache/
+config.toml

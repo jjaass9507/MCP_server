@@ -1,0 +1,23 @@
+# MCP Server Configuration
+# Copy this file to config.toml and edit the values.
+# You can also point to a custom path with: MCP_CONFIG=/path/to/config.toml
+
+[filesystem]
+# Directories the server is allowed to read.
+# All paths must be absolute. Sub-paths are automatically allowed.
+# Empty list = all access denied.
+allowed_paths = [
+    "/home/user/data",
+    "/tmp/workspace",
+]
+
+# Set to false for read-only mode (write_file and delete_file will be rejected).
+allow_write = true
+
+[database]
+# Named aliases for SQLite databases.
+# Tools accept db_name (the key) instead of a raw file path.
+# This prevents the model from accessing arbitrary database files.
+[database.connections]
+mydb      = "/home/user/data/mydb.sqlite"
+analytics = "/home/user/data/analytics.sqlite"

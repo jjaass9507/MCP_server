@@ -1,25 +1,29 @@
 import pathlib
 import stat
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.utils.errors import ToolError
 
+if TYPE_CHECKING:
+    import mcp_server.config as _CfgModule
+
 MAX_READ_BYTES = 1 * 1024 * 1024  # 1 MB
 
 
-def register(mcp: FastMCP) -> None:
+def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
     def read_file(path: str) -> str:
         """Read the text contents of a file.
 
-        Returns the file contents as a string. Files larger than 1 MB are
-        truncated with a warning appended at the end.
+        The path must be inside an allowed directory configured in config.toml.
+        Files larger than 1 MB are truncated with a warning appended.
         """
         p = pathlib.Path(path).resolve()
+        cfg.check_path(p)
         if not p.exists():
             raise ToolError(f"File not found: {path}")
         if not p.is_file():
@@ -29,7 +33,10 @@ def register(mcp: FastMCP) -> None:
             text = p.read_text(encoding="utf-8", errors="replace")
             if size > MAX_READ_BYTES:
                 text = text[:MAX_READ_BYTES]
-                text += f"\n\n[WARNING: file truncated — original size {size} bytes, showing first {MAX_READ_BYTES} bytes]"
+                text += (
+                    f"\n\n[WARNING: file truncated — original size {size} bytes, "
+                    f"showing first {MAX_READ_BYTES} bytes]"
+                )
             return text
         except OSError as e:
             raise ToolError(f"Could not read file: {e}") from e
@@ -42,14 +49,19 @@ def register(mcp: FastMCP) -> None:
     ) -> str:
         """Write or append text content to a file.
 
-        Creates the file (and any parent directories) if it does not exist.
-        Use mode='append' to add to an existing file without overwriting it.
+        The path must be inside an allowed directory and write access must be
+        enabled in config.toml. Creates the file (and parent directories) if
+        they do not exist.
         """
         p = pathlib.Path(path).resolve()
+        cfg.check_path(p, write=True)
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            write_mode = "a" if mode == "append" else "w"
-            p.write_text(content, encoding="utf-8") if write_mode == "w" else p.open("a", encoding="utf-8").write(content)
+            if mode == "append":
+                with p.open("a", encoding="utf-8") as f:
+                    f.write(content)
+            else:
+                p.write_text(content, encoding="utf-8")
             return f"Successfully wrote {len(content)} characters to {path}"
         except OSError as e:
             raise ToolError(f"Could not write file: {e}") from e
@@ -58,11 +70,12 @@ def register(mcp: FastMCP) -> None:
     def list_directory(path: str, recursive: bool = False) -> list[dict]:
         """List the contents of a directory.
 
-        Returns a list of entries, each with: name, type ('file' or 'dir'),
-        size (bytes, 0 for dirs), and modified (ISO 8601 timestamp).
+        The path must be inside an allowed directory configured in config.toml.
+        Returns entries with: name, type ('file'|'dir'), size (bytes), modified (ISO 8601).
         Set recursive=True to include all nested contents.
         """
         p = pathlib.Path(path).resolve()
+        cfg.check_path(p)
         if not p.exists():
             raise ToolError(f"Path not found: {path}")
         if not p.is_dir():
@@ -84,21 +97,20 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def search_files(directory: str, pattern: str, recursive: bool = True) -> list[str]:
-        """Search for files matching a glob pattern within a directory.
+        """Search for files matching a glob pattern within an allowed directory.
 
         Pattern examples: '*.py', '**/*.json', 'data_*.csv'
-        Returns a list of matching file paths as strings.
-        Set recursive=False to search only the top-level directory.
+        Returns matching file paths as strings.
         """
         p = pathlib.Path(directory).resolve()
+        cfg.check_path(p)
         if not p.exists():
             raise ToolError(f"Directory not found: {directory}")
         if not p.is_dir():
             raise ToolError(f"Path is not a directory: {directory}")
         try:
             glob_fn = p.rglob if recursive else p.glob
-            matches = [str(m) for m in sorted(glob_fn(pattern)) if m.is_file()]
-            return matches
+            return [str(m) for m in sorted(glob_fn(pattern)) if m.is_file()]
         except OSError as e:
             raise ToolError(f"Search failed: {e}") from e
 
@@ -106,9 +118,11 @@ def register(mcp: FastMCP) -> None:
     def file_info(path: str) -> dict:
         """Get metadata about a file or directory.
 
+        The path must be inside an allowed directory.
         Returns: path, type, size (bytes), modified, created, permissions (octal).
         """
         p = pathlib.Path(path).resolve()
+        cfg.check_path(p)
         if not p.exists():
             raise ToolError(f"Path not found: {path}")
         try:
@@ -126,16 +140,17 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def delete_file(path: str) -> str:
-        """Delete a file at the given path.
+        """Delete a file. Write access must be enabled in config.toml.
 
-        Only files can be deleted with this tool (not directories).
-        This action is irreversible.
+        The path must be inside an allowed directory.
+        Only files can be deleted (not directories). This action is irreversible.
         """
         p = pathlib.Path(path).resolve()
+        cfg.check_path(p, write=True)
         if not p.exists():
             raise ToolError(f"File not found: {path}")
         if not p.is_file():
-            raise ToolError(f"Path is not a file (use a dedicated tool for directories): {path}")
+            raise ToolError(f"Path is not a file: {path}")
         try:
             p.unlink()
             return f"Deleted: {path}"
