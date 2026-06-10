@@ -9,6 +9,7 @@ from mcp_server.tools import custom, database, filesystem
 def create_server() -> FastMCP:
     mcp = FastMCP(
         name="MCP Server",
+        host="0.0.0.0",
         instructions=(
             "A modular MCP server providing filesystem, database, and custom tools. "
             "Filesystem and database access is restricted to paths configured in config.toml. "
