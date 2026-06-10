@@ -75,8 +75,18 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             )
         return f"Available databases: {', '.join(names)}. Use one of these as the db_name parameter."
 
+    def _resolve_db_name(db_name: str) -> str:
+        if db_name:
+            return db_name
+        names = cfg.list_db_names()
+        if not names:
+            raise ToolError("No databases configured.")
+        if len(names) == 1:
+            return names[0]
+        raise ToolError(f"Please specify db_name. Available: {', '.join(names)}")
+
     @mcp.tool()
-    def db_query(db_name: str, sql: str, params: list[Any] = []) -> str:
+    def db_query(db_name: str = "", sql: str = "", params: list[Any] = []) -> str:
         """Execute a SELECT query against a named database.
 
         Returns query results as a JSON string (list of row objects).
@@ -90,7 +100,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         """
         if not sql.strip().upper().startswith("SELECT"):
             raise ToolError("db_query only accepts SELECT statements. Use db_execute for INSERT/UPDATE/DELETE.")
-        dsn = cfg.resolve_db(db_name)
+        dsn = cfg.resolve_db(_resolve_db_name(db_name))
         with _get_conn(dsn, cfg) as cur:
             if cfg.is_postgres(dsn):
                 cur.execute(sql, params or None)
@@ -101,7 +111,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         return json.dumps(rows, ensure_ascii=False, default=str)
 
     @mcp.tool()
-    def db_execute(db_name: str, sql: str, params: list[Any] = []) -> dict:
+    def db_execute(db_name: str = "", sql: str = "", params: list[Any] = []) -> dict:
         """Execute an INSERT, UPDATE, or DELETE statement against a named database.
 
         Returns {"rows_affected": int, "last_insert_id": int}.
@@ -115,7 +125,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         first_word = sql.strip().upper().split()[0] if sql.strip() else ""
         if first_word == "SELECT":
             raise ToolError("db_execute does not accept SELECT. Use db_query for reads.")
-        dsn = cfg.resolve_db(db_name)
+        dsn = cfg.resolve_db(_resolve_db_name(db_name))
         with _get_conn(dsn, cfg) as cur:
             if cfg.is_postgres(dsn):
                 cur.execute(sql, params or None)
@@ -131,12 +141,22 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 }
 
     @mcp.tool()
-    def db_list_tables(db_name: str) -> str:
+    def db_list_tables(db_name: str = "") -> str:
         """List all table names in a named database.
 
         Args:
-            db_name: Database name from config.toml. Use db_list_databases() to see options.
+            db_name: Database name from config.toml. If omitted and only one database
+                     is configured, it is selected automatically.
+                     Use db_list_databases() to see available names.
         """
+        if not db_name:
+            names = cfg.list_db_names()
+            if not names:
+                raise ToolError("No databases configured. Add entries under [database.connections] in config.toml.")
+            if len(names) == 1:
+                db_name = names[0]
+            else:
+                return f"Please specify db_name. Available databases: {', '.join(names)}"
         dsn = cfg.resolve_db(db_name)
         with _get_conn(dsn, cfg) as cur:
             if cfg.is_postgres(dsn):
@@ -154,7 +174,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         return f"Tables in '{db_name}' ({len(tables)} total): {', '.join(tables)}"
 
     @mcp.tool()
-    def db_table_schema(db_name: str, table_name: str) -> list[dict]:
+    def db_table_schema(db_name: str = "", table_name: str = "") -> list[dict]:
         """Get the column definitions for a table in a named database.
 
         For SQLite: returns cid, name, type, notnull, default_value, is_primary_key.
@@ -164,7 +184,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             db_name:    Database name from config.toml. Use db_list_databases() to see options.
             table_name: Name of the table to inspect.
         """
-        dsn = cfg.resolve_db(db_name)
+        dsn = cfg.resolve_db(_resolve_db_name(db_name))
         with _get_conn(dsn, cfg) as cur:
             if cfg.is_postgres(dsn):
                 cur.execute(
