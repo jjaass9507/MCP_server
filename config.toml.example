@@ -15,9 +15,14 @@ allowed_paths = [
 allow_write = true
 
 [database]
-# Named aliases for SQLite databases.
-# Tools accept db_name (the key) instead of a raw file path.
-# This prevents the model from accessing arbitrary database files.
+# Named aliases for SQLite or PostgreSQL databases.
+# Tools accept db_name (the key) instead of a raw path or DSN.
+# SQLite  → absolute file path
+# PostgreSQL → postgresql://user:password@host:port/dbname
 [database.connections]
 mydb      = "/home/user/data/mydb.sqlite"
 analytics = "/home/user/data/analytics.sqlite"
+
+# PostgreSQL examples:
+# pgdb     = "postgresql://myuser:mypassword@localhost:5432/mydb"
+# prod     = "postgresql://appuser:secret@db.internal:5432/production"
