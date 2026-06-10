@@ -16,9 +16,26 @@ MAX_READ_BYTES = 1 * 1024 * 1024  # 1 MB
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
+    def fs_list_allowed_paths() -> list[str]:
+        """List all directories that are allowed for filesystem access.
+
+        Always call this first before using any other filesystem tool to discover
+        which paths are accessible. Use one of the returned paths (or a sub-path
+        within them) as the path argument in other filesystem tools.
+        """
+        paths = [str(p) for p in cfg._allowed_paths]
+        if not paths:
+            raise ToolError(
+                "No filesystem paths are configured. "
+                "Add entries under [filesystem] allowed_paths in config.toml."
+            )
+        return paths
+
+    @mcp.tool()
     def read_file(path: str) -> str:
         """Read the text contents of a file.
 
+        Call fs_list_allowed_paths() first to discover accessible directories.
         The path must be inside an allowed directory configured in config.toml.
         Files larger than 1 MB are truncated with a warning appended.
         """
@@ -70,7 +87,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
     def list_directory(path: str, recursive: bool = False) -> list[dict]:
         """List the contents of a directory.
 
-        The path must be inside an allowed directory configured in config.toml.
+        Call fs_list_allowed_paths() first to discover accessible directories.
+        The path must be an absolute path inside an allowed directory.
         Returns entries with: name, type ('file'|'dir'), size (bytes), modified (ISO 8601).
         Set recursive=True to include all nested contents.
         """
@@ -99,6 +117,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
     def search_files(directory: str, pattern: str, recursive: bool = True) -> list[str]:
         """Search for files matching a glob pattern within an allowed directory.
 
+        Call fs_list_allowed_paths() first to discover accessible directories.
         Pattern examples: '*.py', '**/*.json', 'data_*.csv'
         Returns matching file paths as strings.
         """
@@ -118,6 +137,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
     def file_info(path: str) -> dict:
         """Get metadata about a file or directory.
 
+        Call fs_list_allowed_paths() first to discover accessible directories.
         The path must be inside an allowed directory.
         Returns: path, type, size (bytes), modified, created, permissions (octal).
         """
@@ -142,6 +162,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
     def delete_file(path: str) -> str:
         """Delete a file. Write access must be enabled in config.toml.
 
+        Call fs_list_allowed_paths() first to discover accessible directories.
         The path must be inside an allowed directory.
         Only files can be deleted (not directories). This action is irreversible.
         """
