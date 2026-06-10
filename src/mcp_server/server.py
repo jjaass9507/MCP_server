@@ -21,6 +21,9 @@ def create_server() -> FastMCP:
     return mcp
 
 
+app = create_server()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="MCP Server")
     parser.add_argument(
@@ -33,14 +36,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8080, help="Port for SSE transport (default: 8080)")
     args = parser.parse_args()
 
-    server = create_server()
-
     if args.transport == "sse":
-        server.settings.host = args.host
-        server.settings.port = args.port
-        server.run(transport="sse")
+        app.settings.host = args.host
+        app.settings.port = args.port
+        app.run(transport="sse")
     else:
-        server.run(transport="stdio")
+        app.run(transport="stdio")
 
 
 if __name__ == "__main__":
