@@ -13,13 +13,13 @@ from typing import Any
 from mcp_server.utils.errors import ToolError
 
 # Resolve config file path: env var → project root → empty config
-_PROJECT_ROOT = pathlib.Path(__file__).parent.parent.parent.parent  # repo root
-
 def _find_config_path() -> pathlib.Path | None:
     env = os.environ.get("MCP_CONFIG")
     if env:
         return pathlib.Path(env)
-    candidate = _PROJECT_ROOT / "config.toml"
+    # When installed as a wheel __file__ is inside site-packages, so search
+    # from the working directory instead.
+    candidate = pathlib.Path.cwd() / "config.toml"
     if candidate.exists():
         return candidate
     return None
@@ -84,10 +84,7 @@ _db_connections: dict[str, str] = (
 
 
 def resolve_db(name: str) -> str:
-    """Return the filesystem path for a named database.
-
-    Raises ToolError with the list of available names if not found.
-    """
+    """Return the connection string (SQLite path or PostgreSQL DSN) for a named database."""
     if name not in _db_connections:
         available = list(_db_connections.keys())
         if available:
@@ -100,6 +97,11 @@ def resolve_db(name: str) -> str:
             "Add entries under [database.connections] in config.toml."
         )
     return _db_connections[name]
+
+
+def is_postgres(dsn: str) -> bool:
+    """Return True if the connection string is a PostgreSQL DSN."""
+    return dsn.startswith(("postgresql://", "postgres://"))
 
 
 def list_db_names() -> list[str]:
