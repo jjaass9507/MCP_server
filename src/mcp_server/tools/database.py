@@ -1,4 +1,5 @@
 import contextlib
+import json
 import sqlite3
 from typing import TYPE_CHECKING, Any
 
@@ -61,10 +62,10 @@ def _get_conn(dsn: str, cfg: "_CfgModule"):
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
-    def db_list_databases() -> list[str]:
+    def db_list_databases() -> str:
         """List the names of all databases configured in config.toml.
 
-        Use one of these names as the db_name parameter in other database tools.
+        Use one of the returned names as the db_name parameter in other database tools.
         """
         names = cfg.list_db_names()
         if not names:
@@ -72,13 +73,13 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 "No databases are configured. "
                 "Add entries under [database.connections] in config.toml."
             )
-        return names
+        return f"Available databases: {', '.join(names)}. Use one of these as the db_name parameter."
 
     @mcp.tool()
-    def db_query(db_name: str, sql: str, params: list[Any] = []) -> list[dict]:
+    def db_query(db_name: str, sql: str, params: list[Any] = []) -> str:
         """Execute a SELECT query against a named database.
 
-        Returns rows as a list of dicts (column name → value).
+        Returns query results as a JSON string (list of row objects).
         Only SELECT statements are allowed; use db_execute for writes.
         Supports both SQLite (file path) and PostgreSQL (DSN) connections.
 
@@ -93,10 +94,11 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         with _get_conn(dsn, cfg) as cur:
             if cfg.is_postgres(dsn):
                 cur.execute(sql, params or None)
-                return cur.fetchall()
+                rows = cur.fetchall()
             else:
                 cursor = cur.execute(sql, params)
-                return [dict(row) for row in cursor.fetchall()]
+                rows = [dict(row) for row in cursor.fetchall()]
+        return json.dumps(rows, ensure_ascii=False, default=str)
 
     @mcp.tool()
     def db_execute(db_name: str, sql: str, params: list[Any] = []) -> dict:
@@ -129,7 +131,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 }
 
     @mcp.tool()
-    def db_list_tables(db_name: str) -> list[str]:
+    def db_list_tables(db_name: str) -> str:
         """List all table names in a named database.
 
         Args:
@@ -141,12 +143,15 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 cur.execute(
                     "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
                 )
-                return [row["tablename"] for row in cur.fetchall()]
+                tables = [row["tablename"] for row in cur.fetchall()]
             else:
                 cursor = cur.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
                 )
-                return [row["name"] for row in cursor.fetchall()]
+                tables = [row["name"] for row in cursor.fetchall()]
+        if not tables:
+            return f"Database '{db_name}' has no tables."
+        return f"Tables in '{db_name}' ({len(tables)} total): {', '.join(tables)}"
 
     @mcp.tool()
     def db_table_schema(db_name: str, table_name: str) -> list[dict]:

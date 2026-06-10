@@ -16,7 +16,7 @@ MAX_READ_BYTES = 1 * 1024 * 1024  # 1 MB
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
-    def fs_list_allowed_paths() -> list[str]:
+    def fs_list_allowed_paths() -> str:
         """List all directories that are allowed for filesystem access.
 
         Always call this first before using any other filesystem tool to discover
@@ -29,7 +29,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 "No filesystem paths are configured. "
                 "Add entries under [filesystem] allowed_paths in config.toml."
             )
-        return paths
+        return f"Allowed paths: {', '.join(paths)}. Use one of these (or a sub-path) as the path argument."
 
     @mcp.tool()
     def read_file(path: str) -> str:
