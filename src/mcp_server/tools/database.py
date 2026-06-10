@@ -141,13 +141,40 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 }
 
     @mcp.tool()
-    def db_list_tables(db_name: str = "") -> str:
-        """List all table names in a named database.
+    def db_list_schemas(db_name: str = "") -> str:
+        """List all user-defined schemas in a PostgreSQL database.
+
+        Call this to discover available schemas before using db_list_tables.
+        For SQLite, always returns 'main' (SQLite has no schemas).
 
         Args:
-            db_name: Database name from config.toml. If omitted and only one database
-                     is configured, it is selected automatically.
-                     Use db_list_databases() to see available names.
+            db_name: Database name from config.toml. Auto-selected if only one is configured.
+        """
+        dsn = cfg.resolve_db(_resolve_db_name(db_name))
+        if not cfg.is_postgres(dsn):
+            return "SQLite does not use schemas. Use db_list_tables() directly."
+        with _get_conn(dsn, cfg) as cur:
+            cur.execute(
+                "SELECT schema_name FROM information_schema.schemata "
+                "WHERE schema_name NOT IN ('information_schema','pg_catalog','pg_toast') "
+                "AND schema_name NOT LIKE 'pg_temp_%' AND schema_name NOT LIKE 'pg_toast_temp_%' "
+                "ORDER BY schema_name"
+            )
+            schemas = [row["schema_name"] for row in cur.fetchall()]
+        if not schemas:
+            return "No user-defined schemas found."
+        return f"Available schemas: {', '.join(schemas)}. Pass one as the schema parameter in db_list_tables()."
+
+    @mcp.tool()
+    def db_list_tables(db_name: str = "", schema: str = "public") -> str:
+        """List all table names in a named database and schema.
+
+        For PostgreSQL databases with multiple schemas, call db_list_schemas() first
+        to discover available schemas, then pass the schema name here.
+
+        Args:
+            db_name: Database name from config.toml. Auto-selected if only one is configured.
+            schema:  Schema name (default: 'public'). Use db_list_schemas() to see all schemas.
         """
         if not db_name:
             names = cfg.list_db_names()
@@ -161,7 +188,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         with _get_conn(dsn, cfg) as cur:
             if cfg.is_postgres(dsn):
                 cur.execute(
-                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
+                    "SELECT tablename FROM pg_tables WHERE schemaname = %s ORDER BY tablename",
+                    (schema,),
                 )
                 tables = [row["tablename"] for row in cur.fetchall()]
             else:
@@ -170,19 +198,19 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 )
                 tables = [row["name"] for row in cursor.fetchall()]
         if not tables:
-            return f"Database '{db_name}' has no tables."
-        return f"Tables in '{db_name}' ({len(tables)} total): {', '.join(tables)}"
+            return f"No tables found in '{db_name}' schema '{schema}'. Try db_list_schemas() to see available schemas."
+        return f"Tables in '{db_name}'.'{schema}' ({len(tables)} total): {', '.join(tables)}"
 
     @mcp.tool()
-    def db_table_schema(db_name: str = "", table_name: str = "") -> list[dict]:
+    def db_table_schema(db_name: str = "", table_name: str = "", schema: str = "public") -> str:
         """Get the column definitions for a table in a named database.
 
-        For SQLite: returns cid, name, type, notnull, default_value, is_primary_key.
-        For PostgreSQL: returns name, type, notnull, default_value, is_primary_key.
+        Returns column info as a JSON string: name, type, notnull, default_value, is_primary_key.
 
         Args:
-            db_name:    Database name from config.toml. Use db_list_databases() to see options.
+            db_name:    Database name from config.toml. Auto-selected if only one is configured.
             table_name: Name of the table to inspect.
+            schema:     Schema name (default: 'public'). Use db_list_schemas() to see all schemas.
         """
         dsn = cfg.resolve_db(_resolve_db_name(db_name))
         with _get_conn(dsn, cfg) as cur:
@@ -204,21 +232,21 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                               AND kcu.column_name = c.column_name
                         ) AS is_primary_key
                     FROM information_schema.columns c
-                    WHERE c.table_name = %s AND c.table_schema = 'public'
+                    WHERE c.table_name = %s AND c.table_schema = %s
                     ORDER BY c.ordinal_position
                     """,
-                    (table_name,),
+                    (table_name, schema),
                 )
                 rows = cur.fetchall()
                 if not rows:
-                    raise ToolError(f"Table not found or empty schema: {table_name}")
-                return rows
+                    raise ToolError(f"Table '{table_name}' not found in schema '{schema}'. Try db_list_schemas() to see available schemas.")
+                return json.dumps(rows, ensure_ascii=False, default=str)
             else:
                 cursor = cur.execute(f"PRAGMA table_info({table_name})")
                 rows = cursor.fetchall()
                 if not rows:
                     raise ToolError(f"Table not found or empty schema: {table_name}")
-                return [
+                return json.dumps([
                     {
                         "cid": row["cid"],
                         "name": row["name"],
@@ -228,7 +256,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                         "is_primary_key": bool(row["pk"]),
                     }
                     for row in rows
-                ]
+                ], ensure_ascii=False, default=str)
 
     @mcp.tool()
     def db_execute_script(db_name: str, script: str) -> str:
