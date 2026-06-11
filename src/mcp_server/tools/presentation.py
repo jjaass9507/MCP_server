@@ -184,15 +184,21 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         if pptx.suffix.lower() != ".pptx":
             raise ToolError("verify_presentation only accepts .pptx files.")
 
+        # Also check common Windows install path
+        _common = r"C:\Program Files\LibreOffice\program\soffice.exe"
         soffice = (
             shutil.which("soffice")
             or shutil.which("libreoffice")
             or shutil.which("soffice.exe")
+            or (_common if pathlib.Path(_common).exists() else None)
         )
         if not soffice:
             raise ToolError(
-                "LibreOffice not found on PATH. "
-                "Install LibreOffice and ensure 'soffice' is accessible."
+                "LibreOffice is not installed or not on PATH. "
+                "verify_presentation is optional — you can open the .pptx directly in "
+                "PowerPoint or WPS Office for visual review instead. "
+                "To enable PNG rendering, install LibreOffice from https://www.libreoffice.org/ "
+                r"and ensure soffice.exe is on PATH (default: C:\Program Files\LibreOffice\program)."
             )
 
         if qa_output_dir:
