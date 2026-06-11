@@ -156,9 +156,19 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 parts = line[3:].split(":")
                 n_slides = parts[1] if len(parts) > 1 else "?"
                 preset = parts[2] if len(parts) > 2 else style.get("preset", "default")
+                # Verify the file actually exists and report its real size.
+                # This makes it impossible for the agent to hallucinate success —
+                # a genuine .pptx is always at least 10 KB.
+                if not out.exists():
+                    raise ToolError(
+                        f"Generator reported success but file not found: {out}. "
+                        "Check that the output directory is writable."
+                    )
+                size_kb = out.stat().st_size // 1024
                 return (
                     f"Presentation saved: {out} "
-                    f"({n_slides} slides, style: {preset}). "
+                    f"({n_slides} slides, style: {preset}, size: {size_kb} KB). "
+                    "File confirmed on disk. "
                     "Use verify_presentation() to render PNG previews for visual QA."
                 )
 
