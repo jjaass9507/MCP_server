@@ -52,47 +52,64 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         Returns preset names, recommended fonts, and design rules that are enforced.
         """
         return (
-            "=== Presentation Presets ===\n"
-            "  corporate  — navy (#003366) accent, white background, Calibri font\n"
-            "  modern     — red (#E84545) accent, light grey background, Arial font\n"
-            "  dark       — cyan (#00B4D8) accent, dark navy background, Arial font\n"
-            "  minimal    — dark grey (#222222) accent, white background, Calibri font\n"
-            "  tech       — purple (#7B2FBE) accent, near-black background, Noto Sans font\n\n"
+            "=== Presentation Presets (8 total) ===\n"
+            "  corporate  — navy accent, white bg, Calibri  [formal / business]\n"
+            "  modern     — red accent, light grey bg, Arial  [energetic]\n"
+            "  dark       — cyan accent, dark navy bg, Arial  [tech / dark mode]\n"
+            "  minimal    — dark grey accent, white bg, Calibri  [clean / simple]\n"
+            "  tech       — purple accent, near-black bg, Noto Sans  [developer]\n"
+            "  aurora     — violet accent, near-black bg, Arial  [open-slide inspired, premium dark]\n"
+            "  bright_sans — blue accent, white bg, Calibri  [open-slide inspired, Google style]\n"
+            "  warm       — orange accent, warm-white bg, Arial  [open-slide inspired, friendly]\n\n"
             "=== Safe Fonts (LibreOffice-reliable) ===\n"
-            "  Arial, Calibri, Helvetica Neue, Noto Sans, Noto Sans TC,\n"
-            "  Microsoft JhengHei, Microsoft YaHei\n\n"
-            "=== Available Slide Layouts ===\n"
-            "  title        — large centered title + subtitle (use for first slide only)\n"
-            "  content      — title bar + bullet list (supports 2-space indent for sub-bullets)\n"
+            "  Arial, Calibri, Noto Sans, Noto Sans TC, Microsoft JhengHei, Microsoft YaHei\n\n"
+            "=== Slide Layouts (8 total) ===\n"
+            "  title        — hero title + subtitle (use for first slide only)\n"
+            "  section      — full-accent section divider with title + subtitle\n"
+            "  content      — title bar + bullet list; supports eyebrow label and speaker notes\n"
             "  two_column   — title bar + left/right columns with optional column titles\n"
-            "  image_text   — title bar + image on left + text on right\n"
-            "  section      — full-accent-color section divider with title + subtitle\n"
-            "  blank        — no title bar, free body text only\n\n"
+            "  stats        — title bar + up to 4 KPI cards (value + label + description)\n"
+            "  quote        — featured pull-quote with large quotation mark + attribution\n"
+            "  image_text   — title bar + image left + text right\n"
+            "  blank        — optional title bar + free body text\n\n"
+            "=== Extra Fields (any layout) ===\n"
+            "  eyebrow  — small all-caps accent label above body (e.g. 'KEY INSIGHT', '第二章')\n"
+            "  section  — section name shown in footer (requires style.show_footer: true)\n"
+            "  notes    — speaker notes text (not visible on slide)\n\n"
+            "=== Footer ===\n"
+            "  Add  \"show_footer\": true  to the style object to enable footer on all slides.\n"
+            "  Footer shows: [section name left]  [page X / N right]\n\n"
             "=== Content Density Guidelines (IMPORTANT) ===\n"
-            "  Slides:   Aim for 8-15 slides for a complete presentation.\n"
-            "            Use: 1 title + 1-2 sections + 5-10 content + 1 closing.\n"
-            "  Bullets:  Each content slide should have 4-6 bullets.\n"
-            "            Each bullet should be a complete, informative phrase (not just 1-2 words).\n"
-            "            Use 2-space indent for sub-bullets: '  sub-point here'.\n"
-            "  Two-col:  Each column should have 3-5 items.\n"
-            "  Body:     For blank/image_text, write 3-6 sentences of detailed text.\n"
-            "  Notes:    Add speaker notes to content slides (notes field) for extra context.\n\n"
+            "  Slides:   8-15 slides total (1 title + 1-2 sections + 5-10 content + 1 closing).\n"
+            "  Bullets:  4-6 bullets per content slide; each must be a full informative phrase.\n"
+            "            Use 2-space indent for sub-bullets: '  sub detail here'.\n"
+            "  Stats:    2-4 cards per stats slide; value should be a number/% with unit.\n"
+            "  Quote:    1-3 sentences; attribution = 'Name, Title'.\n"
+            "  Body:     3-6 sentences for blank/image_text slides.\n"
+            "  Notes:    Add speaker notes to every content slide.\n\n"
             "=== slides_json Format ===\n"
-            '  {\n'
-            '    "title": "Document title",\n'
-            '    "style": { "preset": "corporate", "title_font": "Microsoft JhengHei", "body_font": "Microsoft JhengHei" },\n'
-            '    "slides": [\n'
-            '      { "layout": "title", "title": "主標題", "subtitle": "副標題說明" },\n'
-            '      { "layout": "section", "title": "第一章", "subtitle": "章節說明" },\n'
-            '      { "layout": "content", "title": "投影片標題",\n'
-            '        "bullets": ["要點一的完整說明", "要點二的完整說明", "  子要點（兩個空格縮排）", "要點三"],\n'
-            '        "notes": "演講者備忘錄" },\n'
-            '      { "layout": "two_column", "title": "比較標題",\n'
-            '        "left_title": "優點", "left": ["優點一說明", "優點二說明", "優點三說明"],\n'
-            '        "right_title": "缺點", "right": ["缺點一說明", "缺點二說明"] },\n'
-            '      { "layout": "blank", "body": "結語或自由文字內容，可以寫多行。" }\n'
-            "    ]\n"
-            "  }"
+            '{\n'
+            '  "title": "文件標題",\n'
+            '  "style": { "preset": "aurora", "title_font": "Microsoft JhengHei",\n'
+            '             "body_font": "Microsoft JhengHei", "show_footer": true },\n'
+            '  "slides": [\n'
+            '    { "layout": "title",   "title": "主標題", "subtitle": "副標題" },\n'
+            '    { "layout": "section", "title": "第一章", "subtitle": "章節說明", "section": "第一章" },\n'
+            '    { "layout": "content", "title": "要點標題", "eyebrow": "核心功能", "section": "第一章",\n'
+            '      "bullets": ["完整說明的要點一", "完整說明的要點二", "  子要點（兩格縮排）", "要點三"],\n'
+            '      "notes": "演講者備忘" },\n'
+            '    { "layout": "stats",   "title": "KPI 數據", "section": "數據",\n'
+            '      "stats": [{"value":"99%","label":"可用率","desc":"近30天"},\n'
+            '                {"value":"<1s","label":"回應時間","desc":"平均"},\n'
+            '                {"value":"20", "label":"工具數量","desc":"四大類別"}] },\n'
+            '    { "layout": "two_column", "title": "比較", "section": "分析",\n'
+            '      "left_title": "優點", "left": ["優點一完整說明","優點二","優點三"],\n'
+            '      "right_title": "缺點", "right": ["缺點一完整說明","缺點二"] },\n'
+            '    { "layout": "quote", "quote": "引言內容...", "attribution": "姓名，職稱",\n'
+            '      "section": "結語" },\n'
+            '    { "layout": "blank",   "title": "結語", "body": "完整結論文字。", "section": "結語" }\n'
+            '  ]\n'
+            '}'
         )
 
     @mcp.tool()
@@ -114,6 +131,10 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         - Two-column slides need 3-5 items per column.
         - Add speaker notes (notes field) to each content slide.
         - Do NOT use vague 1-2 word bullets like "Introduction" or "Summary".
+        - Use eyebrow field for small accent labels (e.g. "KEY INSIGHT", "章節名").
+        - Use stats layout for KPI/number slides (up to 4 cards).
+        - Use quote layout for featured quotes or testimonials.
+        - Enable footer with show_footer=true in style for professional page numbering.
 
         Args:
             slides_json:   JSON string containing 'title', 'style', and 'slides' array.
