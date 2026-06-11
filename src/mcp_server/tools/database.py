@@ -5,9 +5,12 @@ from typing import TYPE_CHECKING, Any
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.utils.errors import ToolError
+from mcp_server.utils.logging import get_logger
 
 if TYPE_CHECKING:
     import mcp_server.config as _CfgModule
+
+logger = get_logger("database")
 
 
 # ── connection context managers ───────────────────────────────────────────────
@@ -117,16 +120,21 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         with _get_conn(dsn, cfg) as cur:
             if cfg.is_postgres(dsn):
                 cur.execute(sql, params or None)
-                return {
+                result = {
                     "rows_affected": cur.rowcount,
                     "last_insert_id": 0,
                 }
             else:
                 cursor = cur.execute(sql, params)
-                return {
+                result = {
                     "rows_affected": cursor.rowcount,
                     "last_insert_id": cursor.lastrowid or 0,
                 }
+            logger.info(
+                "db_execute: db=%s op=%s rows_affected=%s",
+                db_name, first_word, result["rows_affected"],
+            )
+            return result
 
     @mcp.tool()
     def db_list_tables(db_name: str) -> list[str]:
@@ -225,6 +233,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 conn = sqlite3.connect(dsn)
                 conn.executescript(script)
                 conn.close()
+            logger.info("db_execute_script: db=%s (%d chars)", db_name, len(script))
             return f"Script executed successfully on database '{db_name}'"
         except ToolError:
             raise
