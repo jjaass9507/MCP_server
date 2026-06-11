@@ -115,7 +115,7 @@ def _resolve_version(available: list[str], spec: str) -> str:
     if m:
         lo = _ver_tuple(m[1])
         strict = not spec.startswith(">=")
-        candidates = [v for v in available if (_ver_tuple(v) > lo) if strict else (_ver_tuple(v) >= lo)]
+        candidates = [v for v in available if (_ver_tuple(v) > lo if strict else _ver_tuple(v) >= lo)]
         return max(candidates, key=_ver_tuple) if candidates else max(available, key=_ver_tuple)
 
     # Exact
