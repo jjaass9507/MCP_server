@@ -1,6 +1,13 @@
 # MCP Server Configuration
 # Copy this file to config.toml and edit the values.
 # You can also point to a custom path with: MCP_CONFIG=/path/to/config.toml
+#
+# Logging is configured via environment variables (not this file):
+#   MCP_LOG_LEVEL   DEBUG | INFO | WARNING | ERROR   (default: INFO)
+#   MCP_LOG_FILE    optional path; logs also written here in addition to stderr
+#
+# Configuration is validated at startup: a non-existent allowed_path or a
+# database whose parent directory is missing will stop the server with an error.
 
 [filesystem]
 # Directories the server is allowed to read.

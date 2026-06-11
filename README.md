@@ -138,6 +138,55 @@ Tools use a `db_name` alias from `config.toml` instead of a raw file path. Call 
 | `calculate(expression)` | Safe math expression evaluator |
 | `format_data(data, input_format, output_format)` | JSON ↔ plain-text conversion |
 
+## Deployment
+
+### Docker (recommended for server environments)
+
+```bash
+# 1. Copy and edit the config
+cp config.toml.example config.toml
+# edit config.toml — set allowed_paths and database connections
+
+# 2. Build and start
+docker compose up -d
+
+# 3. Check status / logs
+docker compose ps
+docker compose logs -f
+```
+
+The container mounts `./config.toml` as read-only at `/config/config.toml` and
+persists data in a named volume `mcp-data`. To write logs to a file, set
+`MCP_LOG_FILE=/data/mcp_server.log` in `docker-compose.yml`.
+
+### systemd (Linux bare-metal / VM)
+
+```bash
+# Run once as root — creates service user, installs to /opt/mcp-server,
+# copies config template to /etc/mcp/config.toml, and enables the service.
+sudo bash deploy/install-systemd.sh
+
+# Edit the config before starting
+sudo nano /etc/mcp/config.toml
+
+sudo systemctl start mcp-server
+sudo systemctl status mcp-server
+journalctl -u mcp-server -f      # live logs
+```
+
+### Logging
+
+Logging is configured with environment variables (not config.toml):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+| `MCP_LOG_FILE`  | _(none)_ | If set, logs are also written to this file |
+
+Logs always go to **stderr** to keep stdout clean for the stdio transport.
+Write operations (`write_file`, `delete_file`, `db_execute`, `db_execute_script`)
+are logged at INFO level for auditing.
+
 ## Adding New Tools
 
 **Add a tool to an existing category** — open the file in `src/mcp_server/tools/` and add inside `register()`:
@@ -177,15 +226,21 @@ MCP_server/
 ├── config.toml             # Your local config (gitignored)
 ├── config.toml.example     # Template — copy and edit
 ├── pyproject.toml
+├── Dockerfile
+├── docker-compose.yml
+├── deploy/
+│   ├── mcp-server.service      # systemd service unit
+│   └── install-systemd.sh      # one-shot Linux install script
 ├── src/
 │   └── mcp_server/
-│       ├── config.py           # Access control & config loader
+│       ├── config.py           # Access control, config loader & startup validation
 │       ├── server.py           # Entry point + CLI args
 │       ├── tools/
 │       │   ├── filesystem.py
 │       │   ├── database.py
 │       │   └── custom.py
 │       └── utils/
-│           └── errors.py
+│           ├── errors.py
+│           └── logging.py      # Structured logging setup
 └── README.md
 ```

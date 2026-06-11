@@ -107,3 +107,62 @@ def is_postgres(dsn: str) -> bool:
 def list_db_names() -> list[str]:
     """Return all configured database names."""
     return list(_db_connections.keys())
+
+
+# ── Startup validation ─────────────────────────────────────────────────────
+
+class ConfigError(Exception):
+    """Raised at startup when the loaded configuration is invalid."""
+
+
+def validate_config() -> list[str]:
+    """Validate the loaded configuration and return a list of warnings.
+
+    Raises ConfigError for problems that should prevent the server from
+    starting (e.g. an allowed_path that does not exist). Returns a list of
+    non-fatal warnings (e.g. no tools configured at all) that the caller
+    should log. This is meant to be called once during server startup so
+    misconfiguration surfaces immediately instead of on the first tool call.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if _config == {}:
+        warnings.append(
+            "No config.toml was loaded — all filesystem and database access is denied."
+        )
+
+    # Filesystem: every configured allowed_path must exist and be a directory.
+    for p in _allowed_paths:
+        if not p.exists():
+            errors.append(f"filesystem.allowed_paths entry does not exist: {p}")
+        elif not p.is_dir():
+            errors.append(f"filesystem.allowed_paths entry is not a directory: {p}")
+
+    if not _allowed_paths and not _db_connections:
+        warnings.append(
+            "No filesystem paths and no databases are configured — "
+            "only the custom utility tools will be usable."
+        )
+
+    # Database: validate the shape of each connection string. SQLite paths must
+    # have an existing parent directory; PostgreSQL DSNs are well-formed enough.
+    for name, dsn in _db_connections.items():
+        if not isinstance(dsn, str) or not dsn.strip():
+            errors.append(f"database.connections['{name}'] is empty or not a string")
+            continue
+        if is_postgres(dsn):
+            continue  # DSN reachability is checked lazily on first use.
+        db_path = pathlib.Path(dsn)
+        if not db_path.parent.exists():
+            errors.append(
+                f"database.connections['{name}'] points to '{dsn}' "
+                f"but the parent directory '{db_path.parent}' does not exist"
+            )
+
+    if errors:
+        raise ConfigError(
+            "Invalid configuration:\n  - " + "\n  - ".join(errors)
+        )
+
+    return warnings

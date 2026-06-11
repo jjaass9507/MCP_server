@@ -6,9 +6,12 @@ from typing import TYPE_CHECKING, Literal
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.utils.errors import ToolError
+from mcp_server.utils.logging import get_logger
 
 if TYPE_CHECKING:
     import mcp_server.config as _CfgModule
+
+logger = get_logger("filesystem")
 
 MAX_READ_BYTES = 1 * 1024 * 1024  # 1 MB
 
@@ -79,6 +82,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     f.write(content)
             else:
                 p.write_text(content, encoding="utf-8")
+            logger.info("write_file: %s (mode=%s, %d chars)", p, mode, len(content))
             return f"Successfully wrote {len(content)} characters to {path}"
         except OSError as e:
             raise ToolError(f"Could not write file: {e}") from e
@@ -174,6 +178,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             raise ToolError(f"Path is not a file: {path}")
         try:
             p.unlink()
+            logger.info("delete_file: %s", p)
             return f"Deleted: {path}"
         except OSError as e:
             raise ToolError(f"Could not delete file: {e}") from e
