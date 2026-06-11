@@ -140,25 +140,6 @@ Tools use a `db_name` alias from `config.toml` instead of a raw file path. Call 
 
 ## Deployment
 
-### Docker (recommended for server environments)
-
-```bash
-# 1. Copy and edit the config
-cp config.toml.example config.toml
-# edit config.toml — set allowed_paths and database connections
-
-# 2. Build and start
-docker compose up -d
-
-# 3. Check status / logs
-docker compose ps
-docker compose logs -f
-```
-
-The container mounts `./config.toml` as read-only at `/config/config.toml` and
-persists data in a named volume `mcp-data`. To write logs to a file, set
-`MCP_LOG_FILE=/data/mcp_server.log` in `docker-compose.yml`.
-
 ### systemd (Linux bare-metal / VM)
 
 ```bash
@@ -181,9 +162,15 @@ Logging is configured with environment variables (not config.toml):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MCP_LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
-| `MCP_LOG_FILE`  | _(none)_ | If set, logs are also written to this file |
+| `MCP_LOG_FILE`  | _(none)_ | If set, logs are also written to this file path |
 
-Logs always go to **stderr** to keep stdout clean for the stdio transport.
+Logs always go to **stderr** (keeping stdout clean for the stdio transport's
+JSON-RPC stream). When managed by systemd, stderr flows into journald
+automatically — use `journalctl -u mcp-server` to read them.
+
+To also persist logs to a file, set `MCP_LOG_FILE` in the service unit or
+shell environment and ensure the target directory exists and is writable.
+
 Write operations (`write_file`, `delete_file`, `db_execute`, `db_execute_script`)
 are logged at INFO level for auditing.
 
@@ -226,8 +213,6 @@ MCP_server/
 ├── config.toml             # Your local config (gitignored)
 ├── config.toml.example     # Template — copy and edit
 ├── pyproject.toml
-├── Dockerfile
-├── docker-compose.yml
 ├── deploy/
 │   ├── mcp-server.service      # systemd service unit
 │   └── install-systemd.sh      # one-shot Linux install script
