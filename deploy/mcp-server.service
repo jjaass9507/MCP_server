@@ -1,0 +1,49 @@
+# systemd service file for the MCP Server (SSE transport).
+#
+# Installation:
+#   sudo cp deploy/mcp-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mcp-server
+#
+# Useful commands:
+#   sudo systemctl status mcp-server
+#   journalctl -u mcp-server -f          # follow live logs
+#   sudo systemctl restart mcp-server
+
+[Unit]
+Description=MCP Server (SSE transport)
+Documentation=https://github.com/jjaass9507/MCP_server
+After=network.target
+
+[Service]
+Type=simple
+
+# Change User/Group to a dedicated service account.
+# Create one with: sudo useradd -r -s /sbin/nologin mcp
+User=mcp
+Group=mcp
+
+WorkingDirectory=/opt/mcp-server
+
+# Activate the project virtualenv if one exists, otherwise use the system Python.
+ExecStart=/opt/mcp-server/.venv/bin/mcp-server \
+    --transport sse \
+    --host 0.0.0.0 \
+    --port 8080
+
+Environment=MCP_CONFIG=/etc/mcp/config.toml
+Environment=MCP_LOG_LEVEL=INFO
+# Uncomment to write logs to a file in addition to journald:
+# Environment=MCP_LOG_FILE=/var/log/mcp-server/mcp.log
+
+# Restart on unexpected exit; give it 5 s before retrying.
+Restart=on-failure
+RestartSec=5
+
+# Harden the process: drop unnecessary kernel capabilities.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
