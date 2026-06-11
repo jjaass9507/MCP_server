@@ -247,7 +247,30 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             "=== Extra Fields (any layout) ===\n"
             "  eyebrow  — small all-caps accent label above body (e.g. 'KEY INSIGHT', '第二章')\n"
             "  section  — section name shown in footer (requires style.show_footer: true)\n"
-            "  notes    — speaker notes text (not visible on slide)\n\n"
+            "  notes    — speaker notes text (not visible on slide)\n"
+            "  icon     — Lucide icon name (see icon list below); rendered in accent colour\n\n"
+            "=== Icons (Lucide SVG bundle, ISC license) ===\n"
+            "  Where icons appear:\n"
+            "    section:    large decorative icon above the accent band (use slide.icon)\n"
+            "    content:    small icon beside eyebrow label, or above content area (use slide.icon)\n"
+            "    two_column: icon beside column title (use left_icon / right_icon)\n"
+            "    stats:      icon above KPI value in each card (use stats[].icon)\n"
+            "  Available icon names (63 total):\n"
+            "    Navigation:  arrow-right arrow-left arrow-up arrow-down\n"
+            "                 chevron-right chevron-left chevron-up chevron-down\n"
+            "    Controls:    check x plus minus search\n"
+            "    Data/Infra:  database cloud server network cpu hard-drive\n"
+            "                 download upload refresh-cw git-branch\n"
+            "    Charts:      bar-chart-2 trending-up trending-down chart-pie activity\n"
+            "    People:      users user user-check\n"
+            "    Security:    shield shield-check lock key\n"
+            "    Ideas/Work:  rocket lightbulb settings wrench target\n"
+            "    Files:       file file-text folder clipboard\n"
+            "    Time:        calendar clock\n"
+            "    Comms:       mail phone message-square bell\n"
+            "    Web/Code:    globe code terminal\n"
+            "    Status:      triangle-alert info circle-help zap\n"
+            "    Business:    briefcase building dollar-sign award star thumbs-up\n\n"
             "=== Footer ===\n"
             "  Add  \"show_footer\": true  to the style object to enable footer on all slides.\n"
             "  Footer shows: [section name left]  [page X / N right]\n\n"
@@ -266,17 +289,17 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             '             "body_font": "Microsoft JhengHei", "show_footer": true },\n'
             '  "slides": [\n'
             '    { "layout": "title",   "title": "主標題", "subtitle": "副標題" },\n'
-            '    { "layout": "section", "title": "第一章", "subtitle": "章節說明", "section": "第一章" },\n'
-            '    { "layout": "content", "title": "要點標題", "eyebrow": "核心功能", "section": "第一章",\n'
+            '    { "layout": "section", "title": "第一章", "subtitle": "章節說明", "icon": "server", "section": "第一章" },\n'
+            '    { "layout": "content", "title": "要點標題", "eyebrow": "核心功能", "icon": "settings", "section": "第一章",\n'
             '      "bullets": ["完整說明的要點一", "完整說明的要點二", "  子要點（兩格縮排）", "要點三"],\n'
             '      "notes": "演講者備忘" },\n'
             '    { "layout": "stats",   "title": "KPI 數據", "section": "數據",\n'
-            '      "stats": [{"value":"99%","label":"可用率","desc":"近30天"},\n'
-            '                {"value":"<1s","label":"回應時間","desc":"平均"},\n'
-            '                {"value":"20", "label":"工具數量","desc":"四大類別"}] },\n'
+            '      "stats": [{"value":"99%","label":"可用率","icon":"shield-check","desc":"近30天"},\n'
+            '                {"value":"<1s","label":"回應時間","icon":"zap","desc":"平均"},\n'
+            '                {"value":"20", "label":"工具數量","icon":"settings","desc":"四大類別"}] },\n'
             '    { "layout": "two_column", "title": "比較", "section": "分析",\n'
-            '      "left_title": "優點", "left": ["優點一完整說明","優點二","優點三"],\n'
-            '      "right_title": "缺點", "right": ["缺點一完整說明","缺點二"] },\n'
+            '      "left_title": "優點", "left_icon": "check", "left": ["優點一完整說明","優點二","優點三"],\n'
+            '      "right_title": "缺點", "right_icon": "x",    "right": ["缺點一完整說明","缺點二"] },\n'
             '    { "layout": "quote", "quote": "引言內容...", "attribution": "姓名，職稱",\n'
             '      "section": "結語" },\n'
             '    { "layout": "blank",   "title": "結語", "body": "完整結論文字。", "section": "結語" }\n'
@@ -350,6 +373,15 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             "",
             "Recommended style: pick a preset from list_presentation_styles()",
             "and set \"show_footer\": true for page numbers.",
+            "",
+            "ICON HINTS (optional but recommended):",
+            "  • section slides: add \"icon\" field (e.g. \"server\", \"database\", \"users\").",
+            "  • stats cards: add \"icon\" to each card object (e.g. \"trending-up\", \"zap\", \"shield-check\").",
+            "  • two_column: add \"left_icon\" / \"right_icon\" to column headings (e.g. \"check\" / \"x\").",
+            "  • content: add \"icon\" with eyebrow to brand the slide theme.",
+            "  Icon names: check x arrow-right database cloud server network cpu trending-up",
+            "              trending-down shield shield-check zap rocket lightbulb users target",
+            "              bar-chart-2 briefcase calendar clock settings wrench star thumbs-up",
         ]
         return "\n".join(lines)
 
@@ -383,6 +415,14 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         - Use stats layout for KPI/number slides (up to 4 cards).
         - Use quote layout for featured quotes or testimonials.
         - Enable footer with show_footer=true in style for professional page numbering.
+        - Add icons to enhance visual clarity:
+            section slides:  "icon": "server"  (large decorative icon above title)
+            stats cards:     "stats": [{"value":"99%","label":"Uptime","icon":"shield-check"}]
+            two_column:      "left_icon": "check", "right_icon": "x"
+            content slides:  "icon": "rocket"  (icon beside eyebrow or above content)
+          Available names: check x arrow-right database cloud server network cpu trending-up
+            trending-down shield shield-check zap rocket lightbulb users target bar-chart-2
+            briefcase calendar settings wrench star thumbs-up (63 total — see list_presentation_styles).
 
         Args:
             slides_json:   JSON string containing 'title', 'style', and 'slides' array.
