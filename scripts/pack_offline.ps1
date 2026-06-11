@@ -23,7 +23,12 @@ $PkgDir = Join-Path $Root "offline_packages"
 New-Item -ItemType Directory -Force -Path $PkgDir | Out-Null
 pip download @ProxyArg "mcp[cli]>=1.0.0" "psycopg[binary]>=3.1" -d $PkgDir
 
-# Build this project into a wheel in the same directory
+# Also download the hatchling build backend so the target can do an EDITABLE
+# install (pip install -e .) fully offline. Editable mode means the target's
+# source tree is used at runtime, so 'git pull' alone updates the server.
+pip download @ProxyArg hatchling editables -d $PkgDir
+
+# Build this project into a wheel too (fallback for non-editable installs)
 pip wheel . --no-deps --no-build-isolation -w $PkgDir
 
 # Install pptxgenjs (Node.js) so node_modules can be included in the zip.

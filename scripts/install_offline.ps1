@@ -43,7 +43,17 @@ python -m venv $VenvDir
 
 # Use 'python -m pip' (NOT pip.exe) so it works even on a fresh venv.
 $VenvPy = Join-Path $VenvDir "Scripts\python.exe"
+
+# 1. Install runtime dependencies (mcp, psycopg, ...) from the offline wheels.
 & $VenvPy -m pip install --no-index --find-links="$PkgDir" "$($WheelFile.FullName)"
+
+# 2. Re-install the project itself in EDITABLE mode so the live source tree is
+#    used at runtime. After this, a plain 'git pull' updates the running server
+#    with no reinstall — the #1 cause of "I updated the code but nothing changed".
+#    Editable install needs the hatchling build backend; it was packed offline.
+Write-Host ""
+Write-Host "Installing project in editable mode (git pull will now be enough to update)..."
+& $VenvPy -m pip install --no-index --find-links="$PkgDir" --no-build-isolation -e .
 
 Write-Host ""
 Write-Host "Install complete. Next steps:"
@@ -52,3 +62,6 @@ Write-Host "  2. Edit config.toml with your paths and databases"
 Write-Host "  3. Start the server:"
 Write-Host "       .\.venv\Scripts\activate"
 Write-Host "       python -m mcp_server.server --transport sse"
+Write-Host ""
+Write-Host "To update later: just 'git pull' (or unzip a new package over this folder)."
+Write-Host "No reinstall needed unless dependencies in pyproject.toml changed."
