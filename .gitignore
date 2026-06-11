@@ -14,3 +14,6 @@ config.toml
 offline_packages/
 mcp-server-offline.zip
 .venv/
+node_modules/
+test_output.pptx
+_test_input.json
