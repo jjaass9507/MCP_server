@@ -10,3 +10,7 @@ venv/
 *.sqlite
 .pytest_cache/
 config.toml
+
+offline_packages/
+mcp-server-offline.zip
+.venv/
