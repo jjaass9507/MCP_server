@@ -61,26 +61,36 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             "=== Safe Fonts (LibreOffice-reliable) ===\n"
             "  Arial, Calibri, Helvetica Neue, Noto Sans, Noto Sans TC,\n"
             "  Microsoft JhengHei, Microsoft YaHei\n\n"
-            "=== QA-Unreliable Fonts (width may shift in LibreOffice) ===\n"
-            "  Georgia, Trebuchet MS\n\n"
             "=== Available Slide Layouts ===\n"
-            "  title        — large centered title + subtitle (use for first slide)\n"
+            "  title        — large centered title + subtitle (use for first slide only)\n"
             "  content      — title bar + bullet list (supports 2-space indent for sub-bullets)\n"
             "  two_column   — title bar + left/right columns with optional column titles\n"
             "  image_text   — title bar + image on left + text on right\n"
             "  section      — full-accent-color section divider with title + subtitle\n"
             "  blank        — no title bar, free body text only\n\n"
+            "=== Content Density Guidelines (IMPORTANT) ===\n"
+            "  Slides:   Aim for 8-15 slides for a complete presentation.\n"
+            "            Use: 1 title + 1-2 sections + 5-10 content + 1 closing.\n"
+            "  Bullets:  Each content slide should have 4-6 bullets.\n"
+            "            Each bullet should be a complete, informative phrase (not just 1-2 words).\n"
+            "            Use 2-space indent for sub-bullets: '  sub-point here'.\n"
+            "  Two-col:  Each column should have 3-5 items.\n"
+            "  Body:     For blank/image_text, write 3-6 sentences of detailed text.\n"
+            "  Notes:    Add speaker notes to content slides (notes field) for extra context.\n\n"
             "=== slides_json Format ===\n"
-            '  { "title": "Doc title", "style": { "preset": "corporate", '
-            '"title_font": "Microsoft JhengHei", "body_font": "Microsoft JhengHei" },\n'
+            '  {\n'
+            '    "title": "Document title",\n'
+            '    "style": { "preset": "corporate", "title_font": "Microsoft JhengHei", "body_font": "Microsoft JhengHei" },\n'
             '    "slides": [\n'
-            '      { "layout": "title",      "title": "...", "subtitle": "..." },\n'
-            '      { "layout": "content",    "title": "...", "bullets": ["point","  sub"], "notes": "..." },\n'
-            '      { "layout": "two_column", "title": "...", "left_title": "Pro", "left": ["A"], '
-            '"right_title": "Con", "right": ["B"] },\n'
-            '      { "layout": "image_text", "title": "...", "body": "...", "image_path": "C:/img.png" },\n'
-            '      { "layout": "section",    "title": "...", "subtitle": "..." },\n'
-            '      { "layout": "blank",      "body": "..." }\n'
+            '      { "layout": "title", "title": "主標題", "subtitle": "副標題說明" },\n'
+            '      { "layout": "section", "title": "第一章", "subtitle": "章節說明" },\n'
+            '      { "layout": "content", "title": "投影片標題",\n'
+            '        "bullets": ["要點一的完整說明", "要點二的完整說明", "  子要點（兩個空格縮排）", "要點三"],\n'
+            '        "notes": "演講者備忘錄" },\n'
+            '      { "layout": "two_column", "title": "比較標題",\n'
+            '        "left_title": "優點", "left": ["優點一說明", "優點二說明", "優點三說明"],\n'
+            '        "right_title": "缺點", "right": ["缺點一說明", "缺點二說明"] },\n'
+            '      { "layout": "blank", "body": "結語或自由文字內容，可以寫多行。" }\n'
             "    ]\n"
             "  }"
         )
@@ -98,9 +108,16 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         Produces an OOXML .pptx file where all text is editable (not images).
         Call list_presentation_styles() first to discover presets, layouts, and the JSON format.
 
+        CONTENT QUALITY REQUIREMENTS — follow these to avoid a sparse presentation:
+        - Include 8-15 slides total (title + sections + content + closing).
+        - Each content slide needs 4-6 bullets; each bullet must be a full informative phrase.
+        - Two-column slides need 3-5 items per column.
+        - Add speaker notes (notes field) to each content slide.
+        - Do NOT use vague 1-2 word bullets like "Introduction" or "Summary".
+
         Args:
             slides_json:   JSON string containing 'title', 'style', and 'slides' array.
-                           See list_presentation_styles() for the full format.
+                           See list_presentation_styles() for the full format and examples.
             output_path:   Absolute path for the output .pptx file (must be in an allowed directory).
             style_preset:  Optional preset override: corporate|modern|dark|minimal|tech.
                            Ignored if slides_json already contains a style.preset field.
