@@ -141,6 +141,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 [node, str(script), tmp_path, str(out)],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=60,
             )
         finally:
@@ -222,6 +223,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             [soffice, "--headless", "--convert-to", "png", "--outdir", str(out_dir), str(pptx)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=120,
         )
 
