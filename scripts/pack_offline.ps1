@@ -26,7 +26,18 @@ pip download @ProxyArg "mcp[cli]>=1.0.0" "psycopg[binary]>=3.1" -d $PkgDir
 # Build this project into a wheel in the same directory
 pip wheel . --no-deps --no-build-isolation -w $PkgDir
 
-# Zip the project, excluding .venv / .git / caches (a packed .venv breaks on the target!)
+# Install pptxgenjs (Node.js) so node_modules can be included in the zip.
+# node_modules is portable across machines (unlike Python venv).
+if (Get-Command node -ErrorAction SilentlyContinue) {
+    Write-Host "Installing pptxgenjs for offline packaging..."
+    if ($Proxy) { npm install pptxgenjs --save --proxy $Proxy }
+    else         { npm install pptxgenjs --save }
+} else {
+    Write-Warning "Node.js not found — skipping pptxgenjs. Install Node.js and re-run if you need presentation tools."
+}
+
+# Zip the project, excluding .venv / .git / caches.
+# node_modules IS included (it's portable; a packed .venv is NOT portable).
 $ZipPath = Join-Path (Split-Path $Root -Parent) "mcp-server-offline.zip"
 $TempDir = Join-Path $env:TEMP "mcp_pack_$(Get-Random)"
 Copy-Item $Root $TempDir -Recurse
@@ -40,3 +51,4 @@ Remove-Item $TempDir -Recurse -Force
 Write-Host ""
 Write-Host "Done: $ZipPath"
 Write-Host "Transfer to the target machine, unzip, then run install_offline.ps1"
+Write-Host "Node.js must be installed on the target machine (node_modules requires local node binary)."
