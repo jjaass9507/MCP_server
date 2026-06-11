@@ -33,3 +33,17 @@ analytics = "/home/user/data/analytics.sqlite"
 # PostgreSQL examples:
 # pgdb     = "postgresql://myuser:mypassword@localhost:5432/mydb"
 # prod     = "postgresql://appuser:secret@db.internal:5432/production"
+
+[presentation]
+# Default style applied to every presentation when not explicitly overridden.
+# The agent does NOT need to specify these — they are applied automatically.
+#
+# Presets: corporate | modern | dark | minimal | tech | aurora | bright_sans | warm
+default_preset      = "aurora"
+#
+# Fonts: Arial | Calibri | Noto Sans | Microsoft JhengHei | Microsoft YaHei | ...
+# default_title_font  = "Microsoft JhengHei"
+# default_body_font   = "Microsoft JhengHei"
+#
+# Show page number + section name in footer
+# default_show_footer = true

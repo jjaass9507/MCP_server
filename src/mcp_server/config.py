@@ -109,6 +109,18 @@ def list_db_names() -> list[str]:
     return list(_db_connections.keys())
 
 
+# ── Presentation defaults ──────────────────────────────────────────────────
+
+_presentation_cfg: dict[str, Any] = _config.get("presentation", {})
+
+presentation_defaults: dict[str, Any] = {
+    "preset":      _presentation_cfg.get("default_preset", ""),
+    "title_font":  _presentation_cfg.get("default_title_font", ""),
+    "body_font":   _presentation_cfg.get("default_body_font", ""),
+    "show_footer": _presentation_cfg.get("default_show_footer", None),
+}
+
+
 # ── Startup validation ─────────────────────────────────────────────────────
 
 class ConfigError(Exception):

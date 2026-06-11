@@ -447,14 +447,23 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         # Non-blocking content audit — flags sparse slides but still generates.
         content_warnings = _audit_slides(payload["slides"])
 
-        # Apply top-level style overrides if provided and not already set
+        # Apply style: tool param > slides_json > config.toml defaults
         style = payload.setdefault("style", {})
+        defaults = cfg.presentation_defaults
         if style_preset and not style.get("preset"):
             style["preset"] = style_preset
+        elif defaults["preset"] and not style.get("preset"):
+            style["preset"] = defaults["preset"]
         if title_font and not style.get("title_font"):
             style["title_font"] = title_font
+        elif defaults["title_font"] and not style.get("title_font"):
+            style["title_font"] = defaults["title_font"]
         if body_font and not style.get("body_font"):
             style["body_font"] = body_font
+        elif defaults["body_font"] and not style.get("body_font"):
+            style["body_font"] = defaults["body_font"]
+        if defaults["show_footer"] is not None and "show_footer" not in style:
+            style["show_footer"] = defaults["show_footer"]
 
         node = _find_node()
         script = _find_script()
