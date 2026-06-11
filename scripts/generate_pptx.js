@@ -75,6 +75,38 @@ const PRESETS = {
     },
 };
 
+// ── Icon bundle ───────────────────────────────────────────────────────────────
+
+const ICONS_DIR = path.join(__dirname, "icons");
+const ICONS = new Map();
+if (fs.existsSync(ICONS_DIR)) {
+    for (const f of fs.readdirSync(ICONS_DIR)) {
+        if (f.endsWith(".svg"))
+            ICONS.set(f.slice(0, -4), fs.readFileSync(path.join(ICONS_DIR, f), "utf8"));
+    }
+}
+
+function recolorSvg(svgText, hexColor) {
+    const c = hexColor.replace(/^#/, "");
+    return svgText
+        .replace(/currentColor/g, `#${c}`)
+        .replace(/stroke="(#000000|#000|black)"/gi, `stroke="#${c}"`)
+        .replace(/fill="(#000000|#000|black)"/gi, `fill="#${c}"`);
+}
+
+function svgToDataUri(svgText) {
+    return `data:image/svg+xml;base64,${Buffer.from(svgText, "utf8").toString("base64")}`;
+}
+
+/** Render an icon from the bundle. Returns false if icon name not found. */
+function addIcon(slide, iconName, x, y, sizein, hexColor) {
+    if (!iconName) return false;
+    const raw = ICONS.get(iconName);
+    if (!raw) return false;
+    slide.addImage({ data: svgToDataUri(recolorSvg(raw, hexColor)), x, y, w: sizein, h: sizein });
+    return true;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function stripHash(c) { return c ? c.replace(/^#/, "").toUpperCase() : c; }
@@ -124,7 +156,7 @@ function addEyebrow(slide, style, text, yStart) {
 }
 
 /** Optional footer: thin separator line + [section label left] [page X/N right]. */
-function addFooter(slide, style, sectionName, pageNum, totalPages) {
+function addFooter(slide, pptx, style, sectionName, pageNum, totalPages) {
     if (!style.show_footer) return;
     const fy = 5.25;
     slide.addShape(pptx.ShapeType.line, {
@@ -199,23 +231,28 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
 
         // ── section ───────────────────────────────────────────────────────────
         case "section": {
+            const hasIcon = slideDef.icon && ICONS.has(slideDef.icon);
+            const bandY   = hasIcon ? 2.15 : 1.7;
             slide.addShape(pptx.ShapeType.rect, {
-                x:0, y:1.7, w:"100%", h:2.1,
+                x:0, y:bandY, w:"100%", h:2.1,
                 fill:{ color:accentColor }, line:{ color:accentColor },
             });
+            if (hasIcon) {
+                addIcon(slide, slideDef.icon, 4.6, 0.85, 0.85, accentColor);
+            }
             slide.addText(slideDef.title || "", {
-                x:0.6, y:1.8, w:8.8, h:1.7,
+                x:0.6, y:bandY + 0.1, w:8.8, h:1.7,
                 fontFace:titleFont, fontSize:34, bold:true,
                 color:style.accentText, valign:"middle", align:"center", wrap:true,
             });
             if (slideDef.subtitle) {
                 slide.addText(slideDef.subtitle, {
-                    x:0.6, y:3.85, w:8.8, h:0.9,
+                    x:0.6, y:bandY + 2.2, w:8.8, h:0.9,
                     fontFace:bodyFont, fontSize:18,
                     color:subtitleColor, align:"center", wrap:true,
                 });
             }
-            addFooter(slide, style, slideDef.section, pageNum, totalPages);
+            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
             break;
         }
 
@@ -223,7 +260,26 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
         case "content": {
             addTitleBar(slide, pptx, style, slideDef.title);
             let bodyY = 1.25;
-            bodyY += addEyebrow(slide, style, slideDef.eyebrow, bodyY);
+
+            // Icon beside eyebrow label (shifts eyebrow text right if icon present)
+            if (slideDef.eyebrow) {
+                const iconRendered = slideDef.icon
+                    ? addIcon(slide, slideDef.icon, 0.4, bodyY, 0.32, accentColor)
+                    : false;
+                const ebX = iconRendered ? 0.8 : 0.4;
+                const ebW = iconRendered ? 8.8 : 9.2;
+                slide.addText(slideDef.eyebrow.toUpperCase(), {
+                    x:ebX, y:bodyY, w:ebW, h:0.32,
+                    fontFace:style.bodyFont, fontSize:11, bold:true,
+                    color:accentColor, charSpacing:2, valign:"middle",
+                });
+                bodyY += 0.38;
+            } else if (slideDef.icon) {
+                // icon without eyebrow: small icon at top-left of content area
+                addIcon(slide, slideDef.icon, 0.4, bodyY, 0.35, accentColor);
+                bodyY += 0.45;
+            }
+
             const bodyH = contentMaxH - bodyY - 0.1;
 
             if (slideDef.bullets && slideDef.bullets.length > 0) {
@@ -239,7 +295,7 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
                 });
             }
             if (slideDef.notes) slide.addNotes(slideDef.notes);
-            addFooter(slide, style, slideDef.section, pageNum, totalPages);
+            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
             break;
         }
 
@@ -252,8 +308,9 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
             // Left
             let leftY = 1.25;
             if (slideDef.left_title) {
+                const leftIconOk = addIcon(slide, slideDef.left_icon, 0.4, leftY + 0.05, 0.35, accentColor);
                 slide.addText(slideDef.left_title, {
-                    x:0.4, y:leftY, w:colW, h:0.45,
+                    x: leftIconOk ? 0.82 : 0.4, y:leftY, w: leftIconOk ? colW - 0.42 : colW, h:0.45,
                     fontFace:titleFont, fontSize:16, bold:true, color:accentColor, valign:"middle",
                 });
                 leftY += 0.5;
@@ -274,8 +331,9 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
             // Right
             let rightY = 1.25;
             if (slideDef.right_title) {
+                const rightIconOk = addIcon(slide, slideDef.right_icon, 5.25, rightY + 0.05, 0.35, accentColor);
                 slide.addText(slideDef.right_title, {
-                    x:5.25, y:rightY, w:colW, h:0.45,
+                    x: rightIconOk ? 5.67 : 5.25, y:rightY, w: rightIconOk ? colW - 0.42 : colW, h:0.45,
                     fontFace:titleFont, fontSize:16, bold:true, color:accentColor, valign:"middle",
                 });
                 rightY += 0.5;
@@ -288,7 +346,7 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
             }
 
             if (slideDef.notes) slide.addNotes(slideDef.notes);
-            addFooter(slide, style, slideDef.section, pageNum, totalPages);
+            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
             break;
         }
 
@@ -312,7 +370,6 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
                     x:cx, y:cardY, w:cardW, h:cardH,
                     fill:{ color: cardBg },
                     line:{ color: accentColor, width:1.5, dashType:"solid" },
-                    // Only draw top border as accent stripe
                 });
 
                 // Accent top stripe
@@ -321,33 +378,39 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
                     fill:{ color:accentColor }, line:{ color:accentColor },
                 });
 
+                // Icon above value (optional)
+                const iconSize = 0.42;
+                const iconRendered = stat.icon
+                    ? addIcon(slide, stat.icon, cx + (cardW - iconSize) / 2, cardY + 0.18, iconSize, accentColor)
+                    : false;
+                const valueY = cardY + (iconRendered ? 0.72 : 0.55);
+
                 // Big value
-                const valueY = cardY + 0.55;
                 slide.addText(stat.value || "—", {
-                    x:cx+0.1, y:valueY, w:cardW-0.2, h:1.4,
-                    fontFace:titleFont, fontSize:48, bold:true,
+                    x:cx+0.1, y:valueY, w:cardW-0.2, h:1.2,
+                    fontFace:titleFont, fontSize:44, bold:true,
                     color:accentColor, align:"center", valign:"middle",
                 });
 
                 // Label
                 slide.addText(stat.label || "", {
-                    x:cx+0.1, y:valueY+1.4, w:cardW-0.2, h:0.55,
-                    fontFace:bodyFont, fontSize:15, bold:true,
+                    x:cx+0.1, y:valueY+1.2, w:cardW-0.2, h:0.5,
+                    fontFace:bodyFont, fontSize:14, bold:true,
                     color:bodyText, align:"center",
                 });
 
                 // Description
                 if (stat.desc) {
                     slide.addText(stat.desc, {
-                        x:cx+0.1, y:valueY+1.95, w:cardW-0.2, h:cardH - 2.65,
-                        fontFace:bodyFont, fontSize:12,
+                        x:cx+0.1, y:valueY+1.7, w:cardW-0.2, h:cardH - (valueY - cardY) - 1.85,
+                        fontFace:bodyFont, fontSize:11,
                         color:subtitleColor, align:"center", wrap:true,
                     });
                 }
             });
 
             if (slideDef.notes) slide.addNotes(slideDef.notes);
-            addFooter(slide, style, slideDef.section, pageNum, totalPages);
+            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
             break;
         }
 
@@ -382,7 +445,7 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
             }
 
             if (slideDef.notes) slide.addNotes(slideDef.notes);
-            addFooter(slide, style, slideDef.section, pageNum, totalPages);
+            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
             break;
         }
 
@@ -408,7 +471,7 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
                 });
             }
             if (slideDef.notes) slide.addNotes(slideDef.notes);
-            addFooter(slide, style, slideDef.section, pageNum, totalPages);
+            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
             break;
         }
 
@@ -426,7 +489,7 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
                     color:bodyText, valign:"top", wrap:true,
                 });
             }
-            addFooter(slide, style, slideDef.section, pageNum, totalPages);
+            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
             break;
         }
     }
@@ -479,31 +542,31 @@ async function runTest() {
         },
         slides: [
             { layout:"title", title:"MCP Server 功能展示", subtitle:"open-slide 風格 · pptxgenjs OOXML · 文字永遠可編輯" },
-            { layout:"section", title:"第一章：系統架構", subtitle:"資料庫 · 檔案系統 · 簡報工具", section:"架構總覽" },
+            { layout:"section", title:"第一章：系統架構", subtitle:"資料庫 · 檔案系統 · 簡報工具", icon:"server", section:"架構總覽" },
             { layout:"content", title:"工具清單",
-              eyebrow:"核心功能",
+              eyebrow:"核心功能", icon:"settings",
               section:"架構總覽",
               bullets:[
                   "資料庫查詢（db_query / db_execute）支援 SQLite 與 PostgreSQL",
                   "  自動偵測 schema，支援多資料庫切換",
                   "檔案系統工具：讀寫、搜尋、刪除，限制在允許路徑內",
                   "簡報生成：直接寫入 OOXML，文字永遠可編輯",
-                  "  8 種 preset 風格，6 種版型，支援 footer 與 eyebrow",
+                  "  8 種 preset 風格，8 種版型，支援 icon · footer · eyebrow",
               ],
               notes:"演講者備忘：強調可編輯 OOXML 是關鍵優勢，不同於截圖式方案。" },
             { layout:"stats", title:"系統效能指標",
               section:"效能數據",
               stats:[
-                  { value:"20",  label:"MCP 工具數",   desc:"涵蓋 DB、FS、簡報、通用四大類" },
-                  { value:"8",   label:"簡報 Preset",  desc:"aurora · bright_sans · warm 等" },
-                  { value:"6",   label:"投影片版型",    desc:"title/content/stats/quote/…" },
-                  { value:"<1s", label:"生成時間",      desc:"單次呼叫完成整份簡報" },
+                  { value:"20",  label:"MCP 工具數",   icon:"zap",          desc:"涵蓋 DB、FS、簡報、通用四大類" },
+                  { value:"8",   label:"簡報 Preset",  icon:"star",         desc:"aurora · bright_sans · warm 等" },
+                  { value:"63",  label:"內建圖示",      icon:"check",        desc:"Lucide ISC 授權 SVG bundle" },
+                  { value:"<1s", label:"生成時間",      icon:"trending-up",  desc:"單次呼叫完成整份簡報" },
               ] },
             { layout:"two_column", title:"方案比較",
               section:"設計決策",
-              left_title:"pptxgenjs（現行）",
+              left_title:"pptxgenjs（現行）", left_icon:"check",
               left:["直接寫 OOXML，文字可編輯","精確字型與座標控制","不依賴螢幕截圖","Node.js 環境即可執行"],
-              right_title:"截圖式方案",
+              right_title:"截圖式方案", right_icon:"x",
               right:["文字變成圖片，無法搜尋","字型渲染依賴系統環境","檔案體積大","需要完整瀏覽器環境"],
               notes:"截圖式方案的最大問題是無法在 PowerPoint 內編輯文字。" },
             { layout:"quote",
@@ -511,7 +574,7 @@ async function runTest() {
               attribution:"MCP Server · 2026",
               section:"設計理念" },
             { layout:"blank", title:"結語", section:"結尾",
-              body:"本次展示涵蓋所有 8 種 preset 主題（corporate / modern / dark / minimal / tech / aurora / bright_sans / warm）及 6 種版型。footer、eyebrow 標籤、stats KPI 卡片均已實作。文字全部可在 PowerPoint 內直接編輯。" },
+              body:`本次展示涵蓋所有 8 種 preset 主題（corporate / modern / dark / minimal / tech / aurora / bright_sans / warm）及 8 種版型。footer、eyebrow 標籤、stats KPI 卡片、icon（${ICONS.size} 個 Lucide SVG）均已實作。文字全部可在 PowerPoint 內直接編輯。` },
         ],
     };
     const tmp = path.join(process.cwd(), "_test_input.json");
