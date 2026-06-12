@@ -41,6 +41,22 @@
 - 是否需要中文字型（Microsoft JhengHei / Microsoft YaHei）？
 - 是否要在每頁顯示頁碼和章節名稱（show_footer）？
 
+**如果使用者提供了風格說明（YAML、色碼、文字描述）**，不要只挑 preset——必須把每個值翻譯成明確的 style 欄位，挑最接近的 preset 當基底，再逐項覆寫：
+
+```json
+"style": {
+  "preset": "corporate",
+  "accent_color": "#0F6CBD",
+  "body_bg": "#FFFFFF",
+  "body_text": "#1A1A1A",
+  "title_font": "Microsoft JhengHei",
+  "body_font": "Microsoft JhengHei",
+  "show_footer": true
+}
+```
+
+使用者指定的每個顏色和字型都要帶入，不可省略。
+
 ## 步驟 3：規劃每頁內容架構
 
 用確認好的參數呼叫：

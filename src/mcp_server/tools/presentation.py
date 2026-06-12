@@ -336,6 +336,26 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             "  warm       — orange accent, warm-white bg, Arial  [open-slide inspired, friendly]\n\n"
             "=== Safe Fonts (LibreOffice-reliable) ===\n"
             "  Arial, Calibri, Noto Sans, Noto Sans TC, Microsoft JhengHei, Microsoft YaHei\n\n"
+            "=== CUSTOM STYLE — honor the user's style description ===\n"
+            "  If the user describes a style (colors, fonts, mood — in YAML, prose, or a spec),\n"
+            "  DO NOT just pick a preset and hope. Translate their description into explicit\n"
+            "  style fields. A preset is only the BASE; every field below can be overridden:\n"
+            '    "style": {\n'
+            '      "preset":         "corporate",      // closest base preset\n'
+            '      "accent_color":   "#0F6CBD",        // main brand/accent colour (hex)\n'
+            '      "accent_text":    "#FFFFFF",        // text colour on accent background\n'
+            '      "body_bg":        "#FFFFFF",        // slide background\n'
+            '      "body_text":      "#1A1A1A",        // main text colour\n'
+            '      "subtitle_color": "#555555",        // secondary text colour\n'
+            '      "card_bg":        "#EEF2F7",        // stats/process card background\n'
+            '      "title_font":     "Microsoft JhengHei",\n'
+            '      "body_font":      "Microsoft JhengHei",\n'
+            '      "show_footer":    true\n'
+            '    }\n'
+            "  Mapping guide: user says '深藍色企業風' → preset corporate + accent_color from\n"
+            "  their palette; '橘色活潑' → preset warm + their orange as accent_color;\n"
+            "  dark theme → preset dark/aurora + their colours. Always carry over EVERY\n"
+            "  colour and font the user specified — never silently drop one.\n\n"
             "=== Slide Layouts (12 total) ===\n"
             "  title        — hero title + subtitle (use for first slide only)\n"
             "  agenda       — table-of-contents with numbered items; optional active_item highlight\n"
@@ -487,8 +507,11 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
         lines += [
             "",
-            "Recommended style: pick a preset from list_presentation_styles()",
-            "and set \"show_footer\": true for page numbers.",
+            "STYLE: if the user described a style (colors / fonts / mood / a YAML spec),",
+            "translate EVERY value into explicit style fields — pick the closest preset as",
+            "base, then override accent_color, body_bg, title_font, etc. with the user's",
+            "exact values (see CUSTOM STYLE in list_presentation_styles()).",
+            "Otherwise pick a preset and set \"show_footer\": true for page numbers.",
             "",
             "ICON HINTS (optional but recommended):",
             "  • section slides: add \"icon\" field (e.g. \"server\", \"database\", \"users\").",

@@ -720,10 +720,35 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+// Accept snake_case style keys (what the Python tool and docs use) by mapping
+// them onto the camelCase keys the renderer reads. Without this, fields like
+// "title_font" were silently ignored and the preset defaults always won.
+const STYLE_KEY_ALIASES = {
+    title_font:     "titleFont",
+    body_font:      "bodyFont",
+    accent_color:   "accentColor",
+    accent_text:    "accentText",
+    body_bg:        "bodyBg",
+    body_text:      "bodyText",
+    subtitle_color: "subtitleColor",
+    card_bg:        "cardBg",
+    body_size:      "bodySize",
+};
+
+function normalizeStyleKeys(styleIn) {
+    const out = Object.assign({}, styleIn);
+    for (const [snake, camel] of Object.entries(STYLE_KEY_ALIASES)) {
+        if (out[snake] !== undefined && out[camel] === undefined) out[camel] = out[snake];
+        delete out[snake];
+    }
+    return out;
+}
+
 async function generate(inputPath, outputPath) {
     const raw = JSON.parse(fs.readFileSync(inputPath, "utf8"));
 
-    const presetName = (raw.style && raw.style.preset) || "corporate";
+    raw.style = normalizeStyleKeys(raw.style || {});
+    const presetName = raw.style.preset || "corporate";
     if (!PRESETS[presetName])
         throw new Error(`Unknown preset "${presetName}". Valid: ${Object.keys(PRESETS).join(", ")}`);
 
