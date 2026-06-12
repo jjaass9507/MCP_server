@@ -47,10 +47,14 @@ $VenvPy = Join-Path $VenvDir "Scripts\python.exe"
 # 1. Install runtime dependencies (mcp, psycopg, ...) from the offline wheels.
 & $VenvPy -m pip install --no-index --find-links="$PkgDir" "$($WheelFile.FullName)"
 
-# 2. Re-install the project itself in EDITABLE mode so the live source tree is
+# 2. Install hatchling build backend (required for editable install).
+#    hatchling is build-time only, so step 1 does not pull it in automatically.
+Write-Host "Installing hatchling build backend..."
+& $VenvPy -m pip install --no-index --find-links="$PkgDir" hatchling editables
+
+# 3. Re-install the project itself in EDITABLE mode so the live source tree is
 #    used at runtime. After this, a plain 'git pull' updates the running server
 #    with no reinstall — the #1 cause of "I updated the code but nothing changed".
-#    Editable install needs the hatchling build backend; it was packed offline.
 Write-Host ""
 Write-Host "Installing project in editable mode (git pull will now be enough to update)..."
 & $VenvPy -m pip install --no-index --find-links="$PkgDir" --no-build-isolation -e .
