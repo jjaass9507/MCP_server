@@ -541,6 +541,12 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         Produces an OOXML .pptx file where all text is editable (not images).
         Call list_presentation_styles() first to discover presets, layouts, and the JSON format.
 
+        *** STYLE MUST GO INSIDE slides_json["style"] ***
+        If the user gave you a style spec (YAML, colour codes, fonts), put EVERY value
+        into the "style" object inside slides_json. The separate style_preset / title_font /
+        body_font parameters can ONLY pass a preset name — they cannot carry colours.
+        Anything not inside slides_json["style"] will be silently discarded.
+
         TIP: Call plan_presentation_outline() FIRST to get a per-slide content
         scaffold — it makes the deck far less sparse.
 
@@ -567,21 +573,38 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             trending-down shield shield-check zap rocket lightbulb users target bar-chart-2
             briefcase calendar settings wrench star thumbs-up (63 total — see list_presentation_styles).
 
+        STYLE RULE — CRITICAL:
+            If the user described a visual style (YAML spec, colour codes, fonts, mood),
+            you MUST encode it inside slides_json["style"], NOT in the style_preset param.
+            The style_preset param only accepts a preset NAME (no colours, no fonts).
+            Anything not in slides_json["style"] is silently ignored.
+
+            Correct — custom style inside slides_json:
+              slides_json = '{"style": {"preset":"corporate","accent_color":"#0F4C81",
+                              "title_font":"Microsoft JhengHei","body_font":"Microsoft JhengHei",
+                              "body_bg":"#F5F7FA","show_footer":true}, "slides":[...]}'
+
+            Wrong — style info passed as separate parameters (colours/fonts are lost):
+              create_presentation(slides_json='{"slides":[...]}', style_preset="modern",
+                                  title_font="...")  ← only the preset name reaches the renderer
+
+            Overridable fields inside slides_json["style"]:
+              preset, accent_color, accent_text, body_bg, body_text,
+              subtitle_color, card_bg, title_font, body_font, show_footer
+
         Args:
-            slides_json:   JSON string containing 'title', 'style', and 'slides' array.
-                           See list_presentation_styles() for the full format and examples.
-            output_path:   Absolute path for the output .pptx file. MUST be inside one of
-                           the allowed directories configured on this server (a Windows
-                           path like 'D:/FAC_Job/...'). NEVER use '/tmp' or other
-                           Linux-style paths — they will be rejected. If unsure, ask the
-                           user for the output directory first.
-            style_preset:  Optional preset override: corporate|modern|dark|minimal|tech.
-                           Ignored if slides_json already contains a style.preset field.
-            title_font:    Optional title font override (e.g. 'Microsoft JhengHei').
-            body_font:     Optional body font override.
+            slides_json:   JSON string with 'title', 'style' (see above), and 'slides' array.
+            output_path:   Absolute Windows path inside an allowed directory
+                           (e.g. 'D:/FAC_Job/Agent_test/output.pptx').
+                           NEVER use /tmp or Linux paths — they will be rejected.
+                           Ask the user for the output directory if unsure.
+            style_preset:  Fallback preset name used ONLY when slides_json contains no
+                           style object at all. Ignored otherwise.
+            title_font:    Fallback font used only when slides_json has no title_font.
+            body_font:     Fallback font used only when slides_json has no body_font.
         """
         logger.info(
-            "create_presentation called: output=%s, slides_json=%d chars, preset=%s",
+            "create_presentation called: output=%s, slides_json=%d chars, preset_param=%s",
             output_path, len(slides_json), style_preset or "(none)",
         )
         out = pathlib.Path(output_path).resolve()
@@ -613,23 +636,30 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         # Non-blocking content audit — flags sparse slides but still generates.
         content_warnings = _audit_slides(payload["slides"])
 
-        # Apply style: tool param > slides_json > config.toml defaults
+        # Apply style: slides_json.style > tool params > config.toml defaults
         style = payload.setdefault("style", {})
         defaults = cfg.presentation_defaults
-        if style_preset and not style.get("preset"):
+        # preset
+        if not style.get("preset") and not style.get("accent_color"):
+            # Only fall back to param/defaults when slides_json has no style at all
+            if style_preset:
+                style["preset"] = style_preset
+            elif defaults["preset"]:
+                style["preset"] = defaults["preset"]
+        elif style_preset and not style.get("preset"):
             style["preset"] = style_preset
-        elif defaults["preset"] and not style.get("preset"):
-            style["preset"] = defaults["preset"]
-        if title_font and not style.get("title_font"):
+        # fonts — params fill gaps; slides_json always wins
+        if title_font and not style.get("title_font") and not style.get("titleFont"):
             style["title_font"] = title_font
-        elif defaults["title_font"] and not style.get("title_font"):
+        elif defaults["title_font"] and not style.get("title_font") and not style.get("titleFont"):
             style["title_font"] = defaults["title_font"]
-        if body_font and not style.get("body_font"):
+        if body_font and not style.get("body_font") and not style.get("bodyFont"):
             style["body_font"] = body_font
-        elif defaults["body_font"] and not style.get("body_font"):
+        elif defaults["body_font"] and not style.get("body_font") and not style.get("bodyFont"):
             style["body_font"] = defaults["body_font"]
         if defaults["show_footer"] is not None and "show_footer" not in style:
             style["show_footer"] = defaults["show_footer"]
+        logger.info("create_presentation resolved style: %s", style)
 
         node = _find_node()
         script = _find_script()
