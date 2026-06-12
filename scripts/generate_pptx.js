@@ -231,25 +231,28 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
 
         // ── section ───────────────────────────────────────────────────────────
         case "section": {
-            const hasIcon = slideDef.icon && ICONS.has(slideDef.icon);
-            const bandY   = hasIcon ? 2.15 : 1.7;
+            // Left vertical accent stripe (avoids heavy full-width band)
             slide.addShape(pptx.ShapeType.rect, {
-                x:0, y:bandY, w:"100%", h:2.1,
+                x:0, y:0, w:0.35, h:"100%",
                 fill:{ color:accentColor }, line:{ color:accentColor },
             });
+            const hasIcon = slideDef.icon && ICONS.has(slideDef.icon);
+            const titleY  = hasIcon ? 1.6 : 1.9;
+            const titleW  = hasIcon ? 6.9 : 9.2;
             if (hasIcon) {
-                addIcon(slide, slideDef.icon, 4.6, 0.85, 0.85, accentColor);
+                // Large decorative icon on right side
+                addIcon(slide, slideDef.icon, 7.3, 1.0, 1.5, accentColor);
             }
             slide.addText(slideDef.title || "", {
-                x:0.6, y:bandY + 0.1, w:8.8, h:1.7,
-                fontFace:titleFont, fontSize:34, bold:true,
-                color:style.accentText, valign:"middle", align:"center", wrap:true,
+                x:0.6, y:titleY, w:titleW, h:1.7,
+                fontFace:titleFont, fontSize:40, bold:true,
+                color:accentColor, valign:"middle", align:"left", wrap:true,
             });
             if (slideDef.subtitle) {
                 slide.addText(slideDef.subtitle, {
-                    x:0.6, y:bandY + 2.2, w:8.8, h:0.9,
-                    fontFace:bodyFont, fontSize:18,
-                    color:subtitleColor, align:"center", wrap:true,
+                    x:0.6, y:titleY + 1.75, w:titleW, h:0.85,
+                    fontFace:bodyFont, fontSize:20,
+                    color:subtitleColor, align:"left", wrap:true,
                 });
             }
             addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
@@ -365,16 +368,16 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
             stats.forEach((stat, i) => {
                 const cx = 0.4 + i * (cardW + gap);
 
-                // Card background
+                // Card background (no border — cleaner look)
                 slide.addShape(pptx.ShapeType.rect, {
                     x:cx, y:cardY, w:cardW, h:cardH,
                     fill:{ color: cardBg },
-                    line:{ color: accentColor, width:1.5, dashType:"solid" },
+                    line:{ color: cardBg },
                 });
 
-                // Accent top stripe
+                // Accent top stripe (thicker: 0.12in)
                 slide.addShape(pptx.ShapeType.rect, {
-                    x:cx, y:cardY, w:cardW, h:0.08,
+                    x:cx, y:cardY, w:cardW, h:0.12,
                     fill:{ color:accentColor }, line:{ color:accentColor },
                 });
 
@@ -409,6 +412,224 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
                 }
             });
 
+            if (slideDef.notes) slide.addNotes(slideDef.notes);
+            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
+            break;
+        }
+
+        // ── agenda ────────────────────────────────────────────────────────────
+        // agenda: {layout:"agenda", title:"...", items:["章節一", ...], active_item:2}
+        case "agenda": {
+            // Left accent bar
+            slide.addShape(pptx.ShapeType.rect, {
+                x:0, y:0, w:0.18, h:"100%",
+                fill:{ color:accentColor }, line:{ color:accentColor },
+            });
+            slide.addText(slideDef.title || "", {
+                x:0.45, y:0.22, w:9.1, h:0.65,
+                fontFace:titleFont, fontSize:26, bold:true, color:accentColor,
+            });
+            const items = (slideDef.items || []).slice(0, 7);
+            const count = items.length || 1;
+            const areaH = contentMaxH - 1.0;
+            const itemH = Math.min(0.75, areaH / count);
+            items.forEach((item, i) => {
+                const iy = 1.0 + i * itemH;
+                const isActive = (slideDef.active_item === i + 1);
+                if (isActive) {
+                    slide.addShape(pptx.ShapeType.rect, {
+                        x:0.45, y:iy - 0.04, w:9.1, h:itemH - 0.04,
+                        fill:{ color:accentColor, transparency:88 },
+                        line:{ color:accentColor, width:0.5 },
+                    });
+                }
+                const circR = 0.19;
+                slide.addShape(pptx.ShapeType.ellipse, {
+                    x:0.55, y:iy + (itemH/2 - circR) - 0.02, w:circR*2, h:circR*2,
+                    fill:{ color: isActive ? accentColor : "FFFFFF", transparency: isActive ? 0 : 100 },
+                    line:{ color: isActive ? accentColor : subtitleColor, width:1.5 },
+                });
+                slide.addText(String(i + 1), {
+                    x:0.55, y:iy + (itemH/2 - circR) - 0.02, w:circR*2, h:circR*2,
+                    fontFace:bodyFont, fontSize:11, bold:true,
+                    color: isActive ? style.accentText : subtitleColor,
+                    align:"center", valign:"middle",
+                });
+                slide.addText(item, {
+                    x:1.05, y:iy, w:8.45, h:itemH - 0.04,
+                    fontFace:bodyFont, fontSize: count <= 4 ? 20 : 17,
+                    color: isActive ? bodyText : subtitleColor,
+                    bold: isActive, valign:"middle", wrap:true,
+                });
+            });
+            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
+            break;
+        }
+
+        // ── big_message ───────────────────────────────────────────────────────
+        // big_message: {layout:"big_message", message:"...", supporting:"...", icon:"optional", bg:"subtle"}
+        case "big_message": {
+            const useAccentBg = slideDef.bg !== "subtle";
+            const msgBg    = useAccentBg ? accentColor : style.bodyBg;
+            const msgColor = useAccentBg ? style.accentText : accentColor;
+            const supColor = useAccentBg ? style.accentText : subtitleColor;
+            const iconColor = useAccentBg ? style.accentText : accentColor;
+            slide.background = { color: msgBg };
+            const hasIcon = slideDef.icon && ICONS.has(slideDef.icon);
+            let msgY = hasIcon ? 1.65 : 1.3;
+            if (hasIcon) {
+                addIcon(slide, slideDef.icon, 4.55, 0.45, 0.95, iconColor);
+            }
+            slide.addText(slideDef.message || "", {
+                x:0.5, y:msgY, w:9.0, h:1.9,
+                fontFace:titleFont, fontSize:48, bold:true,
+                color:msgColor, align:"center", valign:"middle", wrap:true,
+            });
+            if (slideDef.supporting) {
+                slide.addText(slideDef.supporting, {
+                    x:1.2, y:msgY + 2.0, w:7.6, h:0.9,
+                    fontFace:bodyFont, fontSize:19,
+                    color:supColor, align:"center", valign:"top", wrap:true,
+                });
+            }
+            if (slideDef.notes) slide.addNotes(slideDef.notes);
+            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
+            break;
+        }
+
+        // ── timeline ──────────────────────────────────────────────────────────
+        // timeline: {layout:"timeline", title:"...", events:[{date,label,desc,icon}, ...]}
+        case "timeline": {
+            addTitleBar(slide, pptx, style, slideDef.title);
+            const events = (slideDef.events || []).slice(0, 6);
+            const evCount = events.length || 1;
+            const lineY  = 3.05;
+            const sx = 0.65, ex = 9.45;
+            const span = ex - sx;
+            // Horizontal axis line
+            slide.addShape(pptx.ShapeType.line, {
+                x:sx, y:lineY, w:span, h:0,
+                line:{ color:accentColor, width:2.5 },
+            });
+            events.forEach((evt, i) => {
+                const nx = evCount === 1 ? sx + span/2 : sx + (span / (evCount-1)) * i;
+                const above = i % 2 === 0;
+                // Node circle
+                slide.addShape(pptx.ShapeType.ellipse, {
+                    x:nx - 0.12, y:lineY - 0.12, w:0.24, h:0.24,
+                    fill:{ color:accentColor }, line:{ color:accentColor },
+                });
+                const labelW = Math.min(1.75, evCount > 3 ? span/evCount + 0.1 : 2.2);
+                const lx = nx - labelW/2;
+                if (above) {
+                    // connector up
+                    slide.addShape(pptx.ShapeType.line, {
+                        x:nx, y:lineY - 0.12, w:0, h:-0.5,
+                        line:{ color:accentColor, width:1 },
+                    });
+                    if (evt.icon) addIcon(slide, evt.icon, nx - 0.18, 1.25, 0.36, accentColor);
+                    if (evt.date) slide.addText(evt.date, {
+                        x:lx, y:1.68, w:labelW, h:0.3,
+                        fontFace:bodyFont, fontSize:10, bold:true, color:accentColor, align:"center",
+                    });
+                    if (evt.label) slide.addText(evt.label, {
+                        x:lx, y:2.0, w:labelW, h:0.42,
+                        fontFace:bodyFont, fontSize:12, bold:true, color:bodyText, align:"center", wrap:true,
+                    });
+                    if (evt.desc) slide.addText(evt.desc, {
+                        x:lx, y:2.44, w:labelW, h:0.52,
+                        fontFace:bodyFont, fontSize:10, color:subtitleColor, align:"center", wrap:true,
+                    });
+                } else {
+                    // connector down
+                    slide.addShape(pptx.ShapeType.line, {
+                        x:nx, y:lineY + 0.12, w:0, h:0.5,
+                        line:{ color:accentColor, width:1 },
+                    });
+                    if (evt.icon) addIcon(slide, evt.icon, nx - 0.18, lineY + 0.72, 0.36, accentColor);
+                    if (evt.date) slide.addText(evt.date, {
+                        x:lx, y:lineY + 0.68, w:labelW, h:0.3,
+                        fontFace:bodyFont, fontSize:10, bold:true, color:accentColor, align:"center",
+                    });
+                    if (evt.label) slide.addText(evt.label, {
+                        x:lx, y:lineY + 1.0, w:labelW, h:0.42,
+                        fontFace:bodyFont, fontSize:12, bold:true, color:bodyText, align:"center", wrap:true,
+                    });
+                    if (evt.desc) slide.addText(evt.desc, {
+                        x:lx, y:lineY + 1.44, w:labelW, h:0.52,
+                        fontFace:bodyFont, fontSize:10, color:subtitleColor, align:"center", wrap:true,
+                    });
+                }
+            });
+            if (slideDef.notes) slide.addNotes(slideDef.notes);
+            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
+            break;
+        }
+
+        // ── process ───────────────────────────────────────────────────────────
+        // process: {layout:"process", title:"...", steps:[{label,desc,icon}, ...]}
+        case "process": {
+            addTitleBar(slide, pptx, style, slideDef.title);
+            const steps = (slideDef.steps || []).slice(0, 5);
+            const sCount  = steps.length || 1;
+            const arrowW  = 0.28;
+            const gap     = 0.12;
+            const totalW  = 9.2;
+            const cardW   = sCount > 1
+                ? (totalW - (sCount - 1) * (arrowW + gap * 2)) / sCount
+                : totalW;
+            const cardH   = contentMaxH - 1.5;
+            const cardY   = 1.38;
+            steps.forEach((step, i) => {
+                const cx = 0.4 + i * (cardW + arrowW + gap * 2);
+                // Card
+                slide.addShape(pptx.ShapeType.rect, {
+                    x:cx, y:cardY, w:cardW, h:cardH,
+                    fill:{ color:cardBg }, line:{ color:cardBg },
+                });
+                // Step number circle
+                const cr = 0.2;
+                const ccx = cx + cardW/2 - cr;
+                slide.addShape(pptx.ShapeType.ellipse, {
+                    x:ccx, y:cardY + 0.18, w:cr*2, h:cr*2,
+                    fill:{ color:accentColor }, line:{ color:accentColor },
+                });
+                slide.addText(String(i + 1), {
+                    x:ccx, y:cardY + 0.18, w:cr*2, h:cr*2,
+                    fontFace:bodyFont, fontSize:14, bold:true,
+                    color:style.accentText, align:"center", valign:"middle",
+                });
+                let cy = cardY + 0.7;
+                if (step.icon) {
+                    const iconSz = 0.42;
+                    addIcon(slide, step.icon, cx + cardW/2 - iconSz/2, cy, iconSz, accentColor);
+                    cy += 0.52;
+                }
+                if (step.label) {
+                    slide.addText(step.label, {
+                        x:cx + 0.1, y:cy, w:cardW - 0.2, h:0.5,
+                        fontFace:bodyFont, fontSize:13, bold:true,
+                        color:bodyText, align:"center", wrap:true,
+                    });
+                    cy += 0.54;
+                }
+                if (step.desc) {
+                    slide.addText(step.desc, {
+                        x:cx + 0.12, y:cy, w:cardW - 0.24, h:cardH - (cy - cardY) - 0.18,
+                        fontFace:bodyFont, fontSize:11,
+                        color:subtitleColor, align:"center", valign:"top", wrap:true,
+                    });
+                }
+                // Arrow to next card
+                if (i < sCount - 1) {
+                    slide.addText("→", {
+                        x:cx + cardW + gap, y:cardY + cardH/2 - 0.22,
+                        w:arrowW, h:0.44,
+                        fontFace:"Arial", fontSize:20, bold:true,
+                        color:accentColor, align:"center", valign:"middle",
+                    });
+                }
+            });
             if (slideDef.notes) slide.addNotes(slideDef.notes);
             addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
             break;
@@ -541,7 +762,10 @@ async function runTest() {
             show_footer: true,
         },
         slides: [
-            { layout:"title", title:"MCP Server 功能展示", subtitle:"open-slide 風格 · pptxgenjs OOXML · 文字永遠可編輯" },
+            { layout:"title", title:"MCP Server 功能展示", subtitle:"12 種版型 · 8 種 Preset · pptxgenjs OOXML · 文字永遠可編輯" },
+            { layout:"agenda", title:"今日議程", section:"目錄",
+              items:["系統架構總覽","效能數據","方案比較","新版型展示：agenda / big_message / timeline / process"],
+              active_item:1 },
             { layout:"section", title:"第一章：系統架構", subtitle:"資料庫 · 檔案系統 · 簡報工具", icon:"server", section:"架構總覽" },
             { layout:"content", title:"工具清單",
               eyebrow:"核心功能", icon:"settings",
@@ -551,7 +775,7 @@ async function runTest() {
                   "  自動偵測 schema，支援多資料庫切換",
                   "檔案系統工具：讀寫、搜尋、刪除，限制在允許路徑內",
                   "簡報生成：直接寫入 OOXML，文字永遠可編輯",
-                  "  8 種 preset 風格，8 種版型，支援 icon · footer · eyebrow",
+                  "  12 種版型，8 種 preset，支援 icon · footer · eyebrow",
               ],
               notes:"演講者備忘：強調可編輯 OOXML 是關鍵優勢，不同於截圖式方案。" },
             { layout:"stats", title:"系統效能指標",
@@ -569,12 +793,30 @@ async function runTest() {
               right_title:"截圖式方案", right_icon:"x",
               right:["文字變成圖片，無法搜尋","字型渲染依賴系統環境","檔案體積大","需要完整瀏覽器環境"],
               notes:"截圖式方案的最大問題是無法在 PowerPoint 內編輯文字。" },
+            { layout:"big_message", title:"", section:"核心訴求",
+              message:"文字永遠可編輯", supporting:"OOXML 結構直接產生，PowerPoint 開啟即可修改每個元素。" },
+            { layout:"timeline", title:"功能演進時程",
+              section:"發展歷程",
+              events:[
+                  { date:"2025 Q4", label:"基礎架構",    desc:"DB + FS 工具上線",         icon:"server" },
+                  { date:"2026 Q1", label:"簡報工具",    desc:"8 種版型、icon 支援",       icon:"star" },
+                  { date:"2026 Q2", label:"版型升級",    desc:"12 種版型含 timeline/process", icon:"rocket" },
+                  { date:"2026 Q3", label:"多語言支援",  desc:"CJK 字型自動偵測",          icon:"globe" },
+              ] },
+            { layout:"process", title:"簡報產出流程",
+              section:"使用流程",
+              steps:[
+                  { label:"選擇主題",   desc:"確認受眾、頁數、deck_type", icon:"target" },
+                  { label:"規劃大綱",   desc:"呼叫 plan_presentation_outline()", icon:"clipboard" },
+                  { label:"填入內容",   desc:"依 guidance 填寫每頁完整內容", icon:"file-text" },
+                  { label:"產出簡報",   desc:"呼叫 create_presentation()", icon:"rocket" },
+              ] },
             { layout:"quote",
               quote:"The slide framework built for agents — but we export real OOXML, not screenshots.",
               attribution:"MCP Server · 2026",
               section:"設計理念" },
             { layout:"blank", title:"結語", section:"結尾",
-              body:`本次展示涵蓋所有 8 種 preset 主題（corporate / modern / dark / minimal / tech / aurora / bright_sans / warm）及 8 種版型。footer、eyebrow 標籤、stats KPI 卡片、icon（${ICONS.size} 個 Lucide SVG）均已實作。文字全部可在 PowerPoint 內直接編輯。` },
+              body:`本次展示涵蓋所有 8 種 preset 主題及 12 種版型（含新增的 agenda / big_message / timeline / process）。footer、eyebrow 標籤、stats KPI 卡片、icon（${ICONS.size} 個 Lucide SVG）均已實作。文字全部可在 PowerPoint 內直接編輯。` },
         ],
     };
     const tmp = path.join(process.cwd(), "_test_input.json");

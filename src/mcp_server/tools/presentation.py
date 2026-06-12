@@ -124,94 +124,192 @@ def _audit_slides(slides: list) -> list[str]:
     return warnings
 
 
-# ── Deck-type outline frameworks (the 'outline-first' stage, done deterministically) ──
-# Each entry: (layout, title_template, content_guidance). The guidance tells the
-# model exactly WHAT to write on that slide — this is the cure for sparse content.
+# ── Deck-type outline frameworks ──────────────────────────────────────────────
+# Each entry: (layout, title_template, content_guidance, priority)
+# priority 1 = essential (never trimmed), 2 = important, 3 = optional
 
-_DECK_FRAMEWORKS: dict[str, list[tuple[str, str, str]]] = {
+_DECK_FRAMEWORKS: dict[str, list[tuple[str, str, str, int]]] = {
     "general": [
-        ("title",   "{topic}", "Cover slide. Subtitle = one-line value proposition."),
-        ("section", "背景與目標", "Why this topic matters now; the goal of this deck."),
-        ("content", "現況概述", "4-6 bullets describing the current situation/context."),
-        ("content", "核心重點", "4-6 bullets on the main ideas, each a full sentence."),
-        ("two_column", "優勢 vs 挑戰", "Left: 3-5 strengths. Right: 3-5 challenges."),
-        ("stats",   "關鍵數據", "3-4 KPI cards (value + label + 1-line description)."),
-        ("content", "建議做法", "4-6 actionable recommendations."),
-        ("quote",   "", "A memorable quote or guiding principle + attribution."),
-        ("blank",   "結語", "3-6 sentences summarizing takeaways and next steps."),
+        ("title",       "{topic}",      "Cover slide. Subtitle = one-line value proposition.", 1),
+        ("agenda",      "今日議程",      "List 4-6 main sections/topics this deck covers.", 3),
+        ("section",     "背景與目標",    "Why this topic matters now; the goal of this deck.", 3),
+        ("content",     "現況概述",      "4-6 bullets describing the current situation/context.", 1),
+        ("content",     "核心重點",      "4-6 bullets on the main ideas, each a full sentence.", 1),
+        ("two_column",  "優勢 vs 挑戰", "Left: 3-5 strengths. Right: 3-5 challenges.", 2),
+        ("stats",       "關鍵數據",      "3-4 KPI cards (value + label + 1-line description).", 2),
+        ("content",     "建議做法",      "4-6 actionable recommendations.", 2),
+        ("big_message", "核心結論",      "One powerful takeaway sentence (under 15 chars).", 2),
+        ("blank",       "結語",          "3-6 sentences summarizing takeaways and next steps.", 1),
     ],
     "product_pitch": [
-        ("title",   "{topic}", "Product name + tagline."),
-        ("content", "問題", "4-6 bullets on the customer pain points."),
-        ("content", "解決方案", "4-6 bullets on how the product solves them."),
-        ("image_text", "產品展示", "Body: describe the product experience in 3-6 sentences."),
-        ("stats",   "市場機會", "3-4 cards: market size, growth, target users, etc."),
-        ("two_column", "我們 vs 競品", "Left: our advantages. Right: competitor limits."),
-        ("content", "商業模式", "4-6 bullets: pricing, channels, revenue."),
-        ("quote",   "", "Customer testimonial + attribution."),
-        ("blank",   "行動呼籲", "Clear ask + contact/next step in 3-6 sentences."),
+        ("title",       "{topic}",       "Product name + tagline.", 1),
+        ("agenda",      "今日議程",       "List 4-6 pitch sections (Problem, Solution, Market, etc.).", 3),
+        ("content",     "問題",           "4-6 bullets on the customer pain points.", 1),
+        ("content",     "解決方案",       "4-6 bullets on how the product solves them.", 1),
+        ("image_text",  "產品展示",       "Body: describe the product experience in 3-6 sentences.", 2),
+        ("stats",       "市場機會",       "3-4 cards: market size, growth, target users, etc.", 2),
+        ("two_column",  "我們 vs 競品",  "Left: our advantages. Right: competitor limits.", 2),
+        ("content",     "商業模式",       "4-6 bullets: pricing, channels, revenue.", 2),
+        ("timeline",    "產品藍圖",       "3-5 roadmap milestones with target dates.", 2),
+        ("big_message", "核心訴求",       "One sentence capturing why investors/customers should care.", 1),
+        ("blank",       "行動呼籲",       "Clear ask + contact/next step in 3-6 sentences.", 1),
     ],
     "technical": [
-        ("title",   "{topic}", "System/project name + one-line scope."),
-        ("section", "背景", "Problem statement and technical context."),
-        ("content", "需求與限制", "4-6 bullets: functional + non-functional requirements."),
-        ("content", "架構設計", "4-6 bullets describing components and data flow."),
-        ("image_text", "架構圖", "Body: explain the diagram in 3-6 sentences. image_path optional."),
-        ("two_column", "方案比較", "Left: chosen approach. Right: alternatives & trade-offs."),
-        ("stats",   "效能指標", "3-4 cards: latency, throughput, scale, reliability."),
-        ("content", "風險與緩解", "4-6 bullets: risks and mitigation."),
-        ("blank",   "結論與後續", "3-6 sentences: decision and roadmap."),
+        ("title",       "{topic}",       "System/project name + one-line scope.", 1),
+        ("section",     "背景",           "Problem statement and technical context.", 3),
+        ("content",     "需求與限制",     "4-6 bullets: functional + non-functional requirements.", 1),
+        ("content",     "架構設計",       "4-6 bullets describing components and data flow.", 1),
+        ("image_text",  "架構圖",         "Body: explain the diagram in 3-6 sentences. image_path optional.", 2),
+        ("process",     "部署流程",       "3-5 steps of the deployment/release process.", 2),
+        ("two_column",  "方案比較",       "Left: chosen approach. Right: alternatives & trade-offs.", 2),
+        ("stats",       "效能指標",       "3-4 cards: latency, throughput, scale, reliability.", 2),
+        ("content",     "風險與緩解",     "4-6 bullets: risks and mitigation.", 2),
+        ("blank",       "結論與後續",     "3-6 sentences: decision and roadmap.", 1),
     ],
     "project_status": [
-        ("title",   "{topic} 專案進度", "Project name + reporting period."),
-        ("stats",   "整體進度", "3-4 cards: % complete, on-time, budget, open issues."),
-        ("content", "已完成項目", "4-6 bullets of completed work this period."),
-        ("content", "進行中項目", "4-6 bullets of in-progress work + owners."),
-        ("two_column", "風險 vs 對策", "Left: 3-5 risks/blockers. Right: 3-5 mitigations."),
-        ("content", "下階段計畫", "4-6 bullets: next milestones and dates."),
-        ("blank",   "需要的支援", "3-6 sentences: decisions/resources needed."),
+        ("title",       "{topic} 專案進度", "Project name + reporting period.", 1),
+        ("stats",       "整體進度",       "3-4 cards: % complete, on-time, budget, open issues.", 1),
+        ("content",     "已完成項目",     "4-6 bullets of completed work this period.", 1),
+        ("content",     "進行中項目",     "4-6 bullets of in-progress work + owners.", 1),
+        ("timeline",    "專案時程",       "3-5 key milestones: completed, in-progress, upcoming.", 2),
+        ("two_column",  "風險 vs 對策",  "Left: 3-5 risks/blockers. Right: 3-5 mitigations.", 2),
+        ("content",     "下階段計畫",     "4-6 bullets: next milestones and dates.", 2),
+        ("big_message", "本期重點",       "One sentence capturing the most important status update.", 2),
+        ("blank",       "需要的支援",     "3-6 sentences: decisions/resources needed.", 1),
     ],
     "training": [
-        ("title",   "{topic}", "Course/module title + audience."),
-        ("section", "學習目標", "What learners will be able to do after this."),
-        ("content", "核心概念", "4-6 bullets explaining the key concepts."),
-        ("content", "步驟說明", "4-6 bullets: step-by-step procedure (use 2-space sub-bullets)."),
-        ("image_text", "範例", "Body: a worked example in 3-6 sentences."),
-        ("content", "常見錯誤", "4-6 bullets: pitfalls and how to avoid them."),
-        ("two_column", "Do vs Don't", "Left: best practices. Right: anti-patterns."),
-        ("blank",   "重點回顧", "3-6 sentences recapping the key takeaways."),
+        ("title",       "{topic}",       "Course/module title + audience.", 1),
+        ("agenda",      "今日議程",       "List 4-6 main topics covered in this training.", 3),
+        ("section",     "學習目標",       "What learners will be able to do after this.", 3),
+        ("content",     "核心概念",       "4-6 bullets explaining the key concepts.", 1),
+        ("content",     "步驟說明",       "4-6 bullets: step-by-step procedure (use 2-space sub-bullets).", 1),
+        ("image_text",  "範例示範",       "Body: a worked example in 3-6 sentences.", 2),
+        ("content",     "常見錯誤",       "4-6 bullets: pitfalls and how to avoid them.", 2),
+        ("two_column",  "Do vs Don't",   "Left: best practices. Right: anti-patterns.", 3),
+        ("big_message", "一句話帶走",     "One key takeaway sentence (under 15 chars).", 2),
+        ("blank",       "重點回顧",       "3-6 sentences recapping the key takeaways.", 1),
     ],
 }
 
+# Meaningful expansion slides per deck type — used when n_slides > framework length.
+# Ordered by usefulness; used in sequence before falling back to generic.
+_EXPANSION_SLIDES: dict[str, list[tuple[str, str, str, int]]] = {
+    "training": [
+        ("content",  "實作練習",    "4-6 bullets: hands-on exercise steps and expected outcome.", 2),
+        ("content",  "進階主題",    "4-6 bullets: deeper material for fast learners.", 2),
+        ("stats",    "學習成效指標", "2-4 cards: how mastery is measured (completion rate, test score, etc.).", 3),
+    ],
+    "technical": [
+        ("content",  "安全性考量",   "4-6 bullets: security threats, mitigations, compliance requirements.", 2),
+        ("content",  "容量與擴展性", "4-6 bullets: expected load, scaling approach, known limits.", 2),
+        ("process",  "維運流程",     "3-5 steps of the monitoring/incident-response process.", 2),
+    ],
+    "product_pitch": [
+        ("content",  "客戶案例",    "4-6 bullets: real customer story with before/after metrics.", 1),
+        ("stats",    "市場驗證",    "2-4 cards: pilot results, NPS, retention, revenue.", 1),
+        ("content",  "團隊介紹",    "4-6 bullets: key team members and their relevant experience.", 2),
+    ],
+    "project_status": [
+        ("content",  "預算摘要",    "4-6 bullets: budget status, burn rate, forecast vs actual.", 2),
+        ("content",  "品質指標",    "4-6 bullets: defect rate, test coverage, SLA compliance.", 2),
+        ("stats",    "本期成果",    "2-4 cards: key metrics achieved this reporting period.", 2),
+    ],
+    "general": [
+        ("content",  "深入分析",      "4-6 bullets: detailed evidence supporting the main argument.", 2),
+        ("two_column", "替代方案比較", "Left: this approach pros. Right: alternative cons.", 2),
+        ("stats",    "補充數據",      "2-4 cards: additional metrics or supporting evidence.", 2),
+    ],
+}
 
-def _build_outline(topic: str, n_slides: int, deck_type: str) -> list[dict]:
-    """Build a per-slide scaffold sized to roughly n_slides for the given deck type.
+# Recommended slide counts per deck type (for user guidance)
+_DECK_SLIDE_GUIDANCE: dict[str, str] = {
+    "general":        "8-12 slides",
+    "product_pitch":  "8-11 slides",
+    "technical":      "9-12 slides",
+    "project_status": "7-9 slides",
+    "training":       "8-10 slides",
+}
 
-    Core slides come from the framework; if more slides are requested than the
-    framework defines, extra 'content' slides are inserted before the closing slide.
-    """
+
+def _build_outline(topic: str, n_slides: int, deck_type: str) -> tuple[list[dict], str]:
+    """Return (outline, note) where note describes any compression or expansion applied."""
     framework = _DECK_FRAMEWORKS.get(deck_type, _DECK_FRAMEWORKS["general"])
-    core = list(framework)
+    full_count = len(framework)
+    note = ""
 
-    # Scale: if caller wants more slides, pad with content slides before the last.
-    if n_slides > len(core):
-        extra = n_slides - len(core)
-        pad = [("content", "補充重點 {k}", "4-6 bullets expanding on a sub-topic.")
-               for _ in range(extra)]
-        core = core[:-1] + pad + core[-1:]
-    elif n_slides < len(core) and n_slides >= 3:
-        # Keep first (title), last (closing), and trim from the middle.
-        keep_mid = n_slides - 2
-        core = [core[0]] + core[1:-1][:keep_mid] + [core[-1]]
+    if n_slides >= full_count:
+        core: list[tuple[str, str, str, int]] = list(framework)
+        if n_slides > full_count:
+            extra_needed = n_slides - full_count
+            expansion = _EXPANSION_SLIDES.get(deck_type, _EXPANSION_SLIDES["general"])
+            pad: list[tuple[str, str, str, int]] = list(expansion[:extra_needed])
+            k = 1
+            while len(pad) < extra_needed:
+                pad.append(("content", f"補充重點 {k}", "4-6 bullets expanding on a sub-topic from earlier in the deck.", 3))
+                k += 1
+            core = core[:-1] + pad + [core[-1]]
+    else:
+        # TRIM: remove by priority (3 first, then 2); priority 1 is never removed.
+        p1_count = sum(1 for e in framework if e[3] == 1)
 
-    outline = []
+        if n_slides < p1_count:
+            note = (
+                f"NOTE: {n_slides} slides is below the minimum for {deck_type} "
+                f"(priority-1 essential slides = {p1_count}). "
+                f"Returning {p1_count} essential slides instead. "
+                f"Consider slide_count={full_count} for the full {_DECK_SLIDE_GUIDANCE.get(deck_type, 'recommended')} structure."
+            )
+            n_slides = p1_count
+        else:
+            note = (
+                f"NOTE: {n_slides} slides is compact for a {deck_type} deck "
+                f"(full structure = {full_count} slides). "
+                f"Essential slides kept; omitted topics are folded into neighboring slides' guidance. "
+                f"Consider slide_count={full_count} for full coverage."
+            )
+
+        to_remove = full_count - n_slides
+        removed: set[int] = set()
+        dropped_by_prev: dict[int, list[tuple[str, str]]] = {}
+
+        for target_p in [3, 2]:
+            if to_remove <= 0:
+                break
+            candidates = [i for i, e in enumerate(framework) if e[3] == target_p]
+            for idx in reversed(candidates):
+                if to_remove <= 0:
+                    break
+                removed.add(idx)
+                to_remove -= 1
+                # Find the nearest preceding non-removed slide to absorb this one's topic.
+                prev = idx - 1
+                while prev >= 0 and prev in removed:
+                    prev -= 1
+                if prev >= 0:
+                    dropped_by_prev.setdefault(prev, []).append((framework[idx][1], framework[idx][2]))
+
+        core = []
+        for i, entry in enumerate(framework):
+            if i in removed:
+                continue
+            layout, title, guidance, priority = entry
+            if i in dropped_by_prev:
+                hints = "; ".join(
+                    f"Also mention briefly: {t} — {g[:60]}"
+                    for t, g in dropped_by_prev[i]
+                )
+                guidance = f"{guidance} ({hints})"
+            core.append((layout, title, guidance, priority))
+
+    outline: list[dict] = []
     k = 1
-    for layout, title_tpl, guidance in core:
+    for entry in core:
+        layout, title_tpl, guidance = entry[0], entry[1], entry[2]
         title = title_tpl.replace("{topic}", topic).replace("{k}", str(k))
         outline.append({"layout": layout, "title": title, "_guidance": guidance})
         if "{k}" in title_tpl:
             k += 1
-    return outline
+    return outline, note
 
 
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
@@ -235,15 +333,24 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             "  warm       — orange accent, warm-white bg, Arial  [open-slide inspired, friendly]\n\n"
             "=== Safe Fonts (LibreOffice-reliable) ===\n"
             "  Arial, Calibri, Noto Sans, Noto Sans TC, Microsoft JhengHei, Microsoft YaHei\n\n"
-            "=== Slide Layouts (8 total) ===\n"
+            "=== Slide Layouts (12 total) ===\n"
             "  title        — hero title + subtitle (use for first slide only)\n"
-            "  section      — full-accent section divider with title + subtitle\n"
+            "  agenda       — table-of-contents with numbered items; optional active_item highlight\n"
+            "  section      — left-stripe section divider with title + subtitle + optional icon\n"
             "  content      — title bar + bullet list; supports eyebrow label and speaker notes\n"
             "  two_column   — title bar + left/right columns with optional column titles\n"
             "  stats        — title bar + up to 4 KPI cards (value + label + description)\n"
+            "  process      — title bar + 3-5 step cards connected by arrows (SOP / flow)\n"
+            "  timeline     — title bar + horizontal milestone timeline (roadmap / schedule)\n"
+            "  big_message  — full-page bold statement (accent bg by default) + supporting text\n"
             "  quote        — featured pull-quote with large quotation mark + attribution\n"
             "  image_text   — title bar + image left + text right\n"
             "  blank        — optional title bar + free body text\n\n"
+            "=== New Layout Fields ===\n"
+            "  agenda:      items:[\"章節一\", \"章節二\", ...], active_item:2 (optional, highlights that item)\n"
+            "  big_message: message:\"核心訊息（15字內）\", supporting:\"說明\", icon:\"optional\", bg:\"subtle\" (optional, uses body bg)\n"
+            "  timeline:    events:[{date:\"Q1\", label:\"里程碑\", desc:\"說明\", icon:\"optional\"}, ...] (3-6 events)\n"
+            "  process:     steps:[{label:\"步驟名\", desc:\"說明\", icon:\"optional\"}, ...] (3-5 steps)\n\n"
             "=== Extra Fields (any layout) ===\n"
             "  eyebrow  — small all-caps accent label above body (e.g. 'KEY INSIGHT', '第二章')\n"
             "  section  — section name shown in footer (requires style.show_footer: true)\n"
@@ -335,12 +442,18 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         """
         deck_type = deck_type if deck_type in _DECK_FRAMEWORKS else "general"
         slide_count = max(3, min(slide_count, 20))
-        outline = _build_outline(topic, slide_count, deck_type)
+        outline, outline_note = _build_outline(topic, slide_count, deck_type)
 
         lines = [
             f"OUTLINE for \"{topic}\" ({deck_type}, {len(outline)} slides).",
+        ]
+        if outline_note:
+            lines.append(outline_note)
+        lines += [
             "STEP 2: Fill each slide below with REAL content per its guidance,",
             "then pass the completed slides to create_presentation().",
+            "",
+            f"RECOMMENDED SLIDE COUNT for {deck_type}: {_DECK_SLIDE_GUIDANCE.get(deck_type, '8-12')}",
             "",
             "CONTENT RULES (from proven AI-slide generators):",
             "  • ~40 words of substance per content slide (concise but complete).",
@@ -376,6 +489,10 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             "",
             "ICON HINTS (optional but recommended):",
             "  • section slides: add \"icon\" field (e.g. \"server\", \"database\", \"users\").",
+            "  • big_message: add \"icon\" above the main message.",
+            "  • agenda: no icons (numbered list handles hierarchy).",
+            "  • timeline events: add \"icon\" per event (e.g. \"rocket\" for launch).",
+            "  • process steps: add \"icon\" per step (e.g. \"settings\" for config step).",
             "  • stats cards: add \"icon\" to each card object (e.g. \"trending-up\", \"zap\", \"shield-check\").",
             "  • two_column: add \"left_icon\" / \"right_icon\" to column headings (e.g. \"check\" / \"x\").",
             "  • content: add \"icon\" with eyebrow to brand the slide theme.",
