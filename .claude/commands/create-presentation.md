@@ -111,7 +111,9 @@ plan_presentation_outline(topic="...", slide_count=N, deck_type="...")
 
 ## 步驟 5：確認輸出路徑後產出
 
-詢問使用者輸出路徑（例如 `D:/FAC_Job/output.pptx`），然後呼叫：
+詢問使用者輸出路徑（例如 `D:/FAC_Job/output.pptx`）。
+注意：必須是伺服器允許目錄內的 Windows 絕對路徑，**不可使用 `/tmp` 等 Linux 路徑**，會被拒絕。
+確認後呼叫：
 ```
 create_presentation(slides_json="...", output_path="...")
 ```

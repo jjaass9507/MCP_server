@@ -547,7 +547,11 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         Args:
             slides_json:   JSON string containing 'title', 'style', and 'slides' array.
                            See list_presentation_styles() for the full format and examples.
-            output_path:   Absolute path for the output .pptx file (must be in an allowed directory).
+            output_path:   Absolute path for the output .pptx file. MUST be inside one of
+                           the allowed directories configured on this server (a Windows
+                           path like 'D:/FAC_Job/...'). NEVER use '/tmp' or other
+                           Linux-style paths — they will be rejected. If unsure, ask the
+                           user for the output directory first.
             style_preset:  Optional preset override: corporate|modern|dark|minimal|tech.
                            Ignored if slides_json already contains a style.preset field.
             title_font:    Optional title font override (e.g. 'Microsoft JhengHei').
@@ -558,7 +562,11 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             output_path, len(slides_json), style_preset or "(none)",
         )
         out = pathlib.Path(output_path).resolve()
-        cfg.check_path(out, write=True)
+        try:
+            cfg.check_path(out, write=True)
+        except ToolError as e:
+            logger.error("create_presentation: output path rejected: %s", e)
+            raise
 
         try:
             payload = json.loads(slides_json)
@@ -630,9 +638,11 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         stdout = result.stdout.strip()
         for line in stdout.splitlines():
             if line.startswith("OK:"):
-                parts = line[3:].split(":")
-                n_slides = parts[1] if len(parts) > 1 else "?"
-                preset = parts[2] if len(parts) > 2 else style.get("preset", "default")
+                # Format: OK:{path}:{count}:{preset} — the path may itself contain
+                # colons (Windows drive letters), so split from the right.
+                parts = line[3:].rsplit(":", 2)
+                n_slides = parts[1] if len(parts) == 3 else "?"
+                preset = parts[2] if len(parts) == 3 else style.get("preset", "default")
                 # Verify the file actually exists and report its real size.
                 # This makes it impossible for the agent to hallucinate success —
                 # a genuine .pptx is always at least 10 KB.
