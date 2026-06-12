@@ -44,20 +44,28 @@ python -m venv $VenvDir
 # Use 'python -m pip' (NOT pip.exe) so it works even on a fresh venv.
 $VenvPy = Join-Path $VenvDir "Scripts\python.exe"
 
-# 1. Install runtime dependencies (mcp, psycopg, ...) from the offline wheels.
+# 1. Install runtime dependencies (mcp, psycopg, ...) AND the project wheel.
+#    This resolves and installs every dependency from the offline wheels.
 & $VenvPy -m pip install --no-index --find-links="$PkgDir" "$($WheelFile.FullName)"
 
-# 2. Install hatchling build backend (required for editable install).
-#    hatchling is build-time only, so step 1 does not pull it in automatically.
-Write-Host "Installing hatchling build backend..."
-& $VenvPy -m pip install --no-index --find-links="$PkgDir" hatchling editables
-
-# 3. Re-install the project itself in EDITABLE mode so the live source tree is
-#    used at runtime. After this, a plain 'git pull' updates the running server
-#    with no reinstall — the #1 cause of "I updated the code but nothing changed".
+# 2. Make the LIVE source tree authoritative so a plain 'git pull' updates the
+#    running server with no reinstall (the #1 cause of "I updated the code but
+#    nothing changed"). We do this WITHOUT an editable install, which would need
+#    the hatchling/editables build backend to be present offline.
+#
+#    Steps: uninstall the copied package (keeps all its dependencies), then drop
+#    a .pth file that puts src/ on the interpreter's import path. After this,
+#    'import mcp_server' resolves to src/mcp_server directly.
 Write-Host ""
-Write-Host "Installing project in editable mode (git pull will now be enough to update)..."
-& $VenvPy -m pip install --no-index --find-links="$PkgDir" --no-build-isolation -e .
+Write-Host "Pointing the venv at the live source tree (git pull will now be enough to update)..."
+& $VenvPy -m pip uninstall -y mcp-server
+$SitePackages = & $VenvPy -c "import sysconfig; print(sysconfig.get_path('purelib'))"
+$SrcDir = Join-Path $Root "src"
+Set-Content -Path (Join-Path $SitePackages "mcp_server.pth") -Value $SrcDir -Encoding ASCII
+Write-Host "Wrote $SitePackages\mcp_server.pth -> $SrcDir"
+
+# Verify the import resolves to the source tree (not a stale copy).
+& $VenvPy -c "import mcp_server, pathlib; print('mcp_server loads from:', pathlib.Path(mcp_server.__file__).parent)"
 
 Write-Host ""
 Write-Host "Install complete. Next steps:"
