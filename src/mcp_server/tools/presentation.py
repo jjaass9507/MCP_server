@@ -14,9 +14,12 @@ from typing import TYPE_CHECKING
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.utils.errors import ToolError
+from mcp_server.utils.logging import get_logger
 
 if TYPE_CHECKING:
     import mcp_server.config as _CfgModule
+
+logger = get_logger("presentation")
 
 _GENERATE_SCRIPT_NAME = pathlib.Path("scripts") / "generate_pptx.js"
 
@@ -550,15 +553,30 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             title_font:    Optional title font override (e.g. 'Microsoft JhengHei').
             body_font:     Optional body font override.
         """
+        logger.info(
+            "create_presentation called: output=%s, slides_json=%d chars, preset=%s",
+            output_path, len(slides_json), style_preset or "(none)",
+        )
         out = pathlib.Path(output_path).resolve()
         cfg.check_path(out, write=True)
 
         try:
             payload = json.loads(slides_json)
         except json.JSONDecodeError as e:
+            # Log the offending region so malformed agent JSON can be diagnosed
+            # from the server log (the agent platform may truncate this error).
+            start = max(0, e.pos - 80)
+            logger.error(
+                "create_presentation: invalid JSON at pos %d: %s | context: ...%s...",
+                e.pos, e.msg, slides_json[start:e.pos + 80],
+            )
             raise ToolError(f"slides_json is not valid JSON: {e}") from e
 
         if not isinstance(payload.get("slides"), list) or not payload["slides"]:
+            logger.error(
+                "create_presentation: missing/empty 'slides' array (top-level keys: %s)",
+                list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__,
+            )
             raise ToolError("slides_json must contain a non-empty 'slides' array.")
 
         # Non-blocking content audit — flags sparse slides but still generates.
@@ -604,6 +622,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
         if result.returncode != 0:
             err = (result.stderr or result.stdout or "unknown error").strip()
+            logger.error(
+                "create_presentation: generator exited %d: %s", result.returncode, err
+            )
             raise ToolError(f"Presentation generation failed: {err}")
 
         stdout = result.stdout.strip()
@@ -621,6 +642,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                         "Check that the output directory is writable."
                     )
                 size_kb = out.stat().st_size // 1024
+                logger.info(
+                    "create_presentation OK: %s (%s slides, %s KB)", out, n_slides, size_kb
+                )
                 msg = (
                     f"Presentation saved: {out} "
                     f"({n_slides} slides, style: {preset}, size: {size_kb} KB). "
@@ -635,6 +659,10 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     )
                 return msg
 
+        logger.error(
+            "create_presentation: unexpected generator output: %s",
+            stdout or result.stderr or "(empty)",
+        )
         raise ToolError(
             f"Unexpected output from generator: {stdout or result.stderr or '(empty)'}"
         )
