@@ -104,6 +104,11 @@ def is_postgres(dsn: str) -> bool:
     return dsn.startswith(("postgresql://", "postgres://"))
 
 
+def is_mssql(dsn: str) -> bool:
+    """Return True if the connection string is a SQL Server (MSSQL) DSN."""
+    return dsn.startswith(("mssql://", "sqlserver://"))
+
+
 def list_db_names() -> list[str]:
     """Return all configured database names."""
     return list(_db_connections.keys())
@@ -163,7 +168,14 @@ def validate_config() -> list[str]:
         if not isinstance(dsn, str) or not dsn.strip():
             errors.append(f"database.connections['{name}'] is empty or not a string")
             continue
-        if is_postgres(dsn):
+        if dsn.startswith("jdbc:"):
+            errors.append(
+                f"database.connections['{name}'] uses a JDBC URL ('{dsn}'). "
+                f"JDBC URLs are not supported. Use a Python DSN instead, e.g. "
+                f"'mssql://user:password@host:port/dbname' for SQL Server."
+            )
+            continue
+        if is_postgres(dsn) or is_mssql(dsn):
             continue  # DSN reachability is checked lazily on first use.
         db_path = pathlib.Path(dsn)
         if not db_path.parent.exists():

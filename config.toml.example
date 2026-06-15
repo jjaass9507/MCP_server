@@ -22,10 +22,11 @@ allowed_paths = [
 allow_write = true
 
 [database]
-# Named aliases for SQLite or PostgreSQL databases.
+# Named aliases for SQLite, PostgreSQL or SQL Server databases.
 # Tools accept db_name (the key) instead of a raw path or DSN.
-# SQLite  → absolute file path
+# SQLite     → absolute file path
 # PostgreSQL → postgresql://user:password@host:port/dbname
+# SQL Server → mssql://user:password@host:port/dbname
 [database.connections]
 mydb      = "/home/user/data/mydb.sqlite"
 analytics = "/home/user/data/analytics.sqlite"
@@ -33,6 +34,12 @@ analytics = "/home/user/data/analytics.sqlite"
 # PostgreSQL examples:
 # pgdb     = "postgresql://myuser:mypassword@localhost:5432/mydb"
 # prod     = "postgresql://appuser:secret@db.internal:5432/production"
+
+# SQL Server (MSSQL) example:
+# NOTE: Use a Python DSN, NOT a JDBC URL. The JDBC form
+# 'jdbc:sqlserver://db:1433;databaseName=fac_power;user=aa;password=aa;...'
+# becomes:
+# MSSQL    = "mssql://aa:aa@db:1433/fac_power"
 
 [presentation]
 # Default style applied to every presentation when not explicitly overridden.
