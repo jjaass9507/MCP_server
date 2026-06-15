@@ -1,6 +1,7 @@
 import contextlib
 import json
 import sqlite3
+import urllib.parse
 from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp import FastMCP
@@ -49,11 +50,55 @@ def _pg_conn(dsn: str):
         raise ToolError(f"Database error: {e}") from e
 
 
+def _parse_mssql_dsn(dsn: str) -> dict[str, Any]:
+    """Parse mssql://user:password@host:port/dbname into pymssql.connect kwargs."""
+    parsed = urllib.parse.urlparse(dsn)
+    if not parsed.hostname:
+        raise ToolError(
+            f"Invalid SQL Server DSN: '{dsn}'. "
+            f"Expected 'mssql://user:password@host:port/dbname'."
+        )
+    return {
+        "server": parsed.hostname,
+        "port": str(parsed.port or 1433),
+        "user": urllib.parse.unquote(parsed.username) if parsed.username else None,
+        "password": urllib.parse.unquote(parsed.password) if parsed.password else None,
+        "database": parsed.path.lstrip("/"),
+    }
+
+
+@contextlib.contextmanager
+def _mssql_conn(dsn: str):
+    try:
+        import pymssql
+    except ImportError as e:
+        raise ToolError(
+            "pymssql is not installed. "
+            "Run: pip install pymssql"
+        ) from e
+    conn = None
+    try:
+        conn = pymssql.connect(**_parse_mssql_dsn(dsn))
+        cur = conn.cursor(as_dict=True)
+        yield cur
+        conn.commit()
+    except pymssql.Error as e:
+        if conn is not None:
+            conn.rollback()
+        raise ToolError(f"Database error: {e}") from e
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @contextlib.contextmanager
 def _get_conn(dsn: str, cfg: "_CfgModule"):
-    """Yield a unified cursor-like object for either SQLite or PostgreSQL."""
+    """Yield a unified cursor-like object for SQLite, PostgreSQL or SQL Server."""
     if cfg.is_postgres(dsn):
         with _pg_conn(dsn) as cur:
+            yield cur
+    elif cfg.is_mssql(dsn):
+        with _mssql_conn(dsn) as cur:
             yield cur
     else:
         with _sqlite_conn(dsn) as conn:
@@ -105,7 +150,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             raise ToolError("db_query only accepts SELECT statements. Use db_execute for INSERT/UPDATE/DELETE.")
         dsn = cfg.resolve_db(_resolve_db_name(db_name))
         with _get_conn(dsn, cfg) as cur:
-            if cfg.is_postgres(dsn):
+            if cfg.is_postgres(dsn) or cfg.is_mssql(dsn):
                 cur.execute(sql, params or None)
                 rows = cur.fetchall()
             else:
@@ -130,7 +175,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             raise ToolError("db_execute does not accept SELECT. Use db_query for reads.")
         dsn = cfg.resolve_db(_resolve_db_name(db_name))
         with _get_conn(dsn, cfg) as cur:
-            if cfg.is_postgres(dsn):
+            if cfg.is_postgres(dsn) or cfg.is_mssql(dsn):
                 cur.execute(sql, params or None)
                 result = {
                     "rows_affected": cur.rowcount,
@@ -159,15 +204,23 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             db_name: Database name from config.toml. Auto-selected if only one is configured.
         """
         dsn = cfg.resolve_db(_resolve_db_name(db_name))
-        if not cfg.is_postgres(dsn):
+        if not cfg.is_postgres(dsn) and not cfg.is_mssql(dsn):
             return "SQLite does not use schemas. Use db_list_tables() directly."
         with _get_conn(dsn, cfg) as cur:
-            cur.execute(
-                "SELECT schema_name FROM information_schema.schemata "
-                "WHERE schema_name NOT IN ('information_schema','pg_catalog','pg_toast') "
-                "AND schema_name NOT LIKE 'pg_temp_%' AND schema_name NOT LIKE 'pg_toast_temp_%' "
-                "ORDER BY schema_name"
-            )
+            if cfg.is_mssql(dsn):
+                cur.execute(
+                    "SELECT name AS schema_name FROM sys.schemas "
+                    "WHERE name NOT IN ('sys','INFORMATION_SCHEMA','guest') "
+                    "AND name NOT LIKE 'db\\_%' ESCAPE '\\' "
+                    "ORDER BY name"
+                )
+            else:
+                cur.execute(
+                    "SELECT schema_name FROM information_schema.schemata "
+                    "WHERE schema_name NOT IN ('information_schema','pg_catalog','pg_toast') "
+                    "AND schema_name NOT LIKE 'pg_temp_%' AND schema_name NOT LIKE 'pg_toast_temp_%' "
+                    "ORDER BY schema_name"
+                )
             schemas = [row["schema_name"] for row in cur.fetchall()]
         if not schemas:
             return "No user-defined schemas found."
@@ -200,6 +253,16 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     (schema,),
                 )
                 tables = [row["tablename"] for row in cur.fetchall()]
+            elif cfg.is_mssql(dsn):
+                # MSSQL's default schema is 'dbo', not Postgres' 'public'.
+                mssql_schema = "dbo" if schema == "public" else schema
+                cur.execute(
+                    "SELECT TABLE_NAME AS name FROM INFORMATION_SCHEMA.TABLES "
+                    "WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE' "
+                    "ORDER BY TABLE_NAME",
+                    (mssql_schema,),
+                )
+                tables = [row["name"] for row in cur.fetchall()]
             else:
                 cursor = cur.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -249,6 +312,35 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 if not rows:
                     raise ToolError(f"Table '{table_name}' not found in schema '{schema}'. Try db_list_schemas() to see available schemas.")
                 return json.dumps(rows, ensure_ascii=False, default=str)
+            elif cfg.is_mssql(dsn):
+                # MSSQL's default schema is 'dbo', not Postgres' 'public'.
+                mssql_schema = "dbo" if schema == "public" else schema
+                cur.execute(
+                    """
+                    SELECT
+                        c.COLUMN_NAME                                  AS name,
+                        c.DATA_TYPE                                    AS type,
+                        CASE WHEN c.IS_NULLABLE = 'NO' THEN 1 ELSE 0 END AS notnull,
+                        c.COLUMN_DEFAULT                               AS default_value,
+                        CASE WHEN EXISTS (
+                            SELECT 1 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+                            JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+                              ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+                            WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+                              AND tc.TABLE_NAME = c.TABLE_NAME
+                              AND tc.TABLE_SCHEMA = c.TABLE_SCHEMA
+                              AND kcu.COLUMN_NAME = c.COLUMN_NAME
+                        ) THEN 1 ELSE 0 END                            AS is_primary_key
+                    FROM INFORMATION_SCHEMA.COLUMNS c
+                    WHERE c.TABLE_NAME = %s AND c.TABLE_SCHEMA = %s
+                    ORDER BY c.ORDINAL_POSITION
+                    """,
+                    (table_name, mssql_schema),
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    raise ToolError(f"Table '{table_name}' not found in schema '{mssql_schema}'. Try db_list_schemas() to see available schemas.")
+                return json.dumps(rows, ensure_ascii=False, default=str)
             else:
                 cursor = cur.execute(f"PRAGMA table_info({table_name})")
                 rows = cursor.fetchall()
@@ -281,6 +373,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         try:
             if cfg.is_postgres(dsn):
                 with _pg_conn(dsn) as cur:
+                    cur.execute(script)
+            elif cfg.is_mssql(dsn):
+                with _mssql_conn(dsn) as cur:
                     cur.execute(script)
             else:
                 conn = sqlite3.connect(dsn)
