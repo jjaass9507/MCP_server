@@ -109,6 +109,11 @@ def is_mssql(dsn: str) -> bool:
     return dsn.startswith(("mssql://", "sqlserver://"))
 
 
+def is_oracle(dsn: str) -> bool:
+    """Return True if the connection string is an Oracle DSN."""
+    return dsn.startswith("oracle://")
+
+
 def list_db_names() -> list[str]:
     """Return all configured database names."""
     return list(_db_connections.keys())
@@ -175,7 +180,7 @@ def validate_config() -> list[str]:
                 f"'mssql://user:password@host:port/dbname' for SQL Server."
             )
             continue
-        if is_postgres(dsn) or is_mssql(dsn):
+        if is_postgres(dsn) or is_mssql(dsn) or is_oracle(dsn):
             continue  # DSN reachability is checked lazily on first use.
         db_path = pathlib.Path(dsn)
         if not db_path.parent.exists():
