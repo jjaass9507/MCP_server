@@ -189,6 +189,29 @@ sudo systemctl status mcp-server
 journalctl -u mcp-server -f      # live logs
 ```
 
+### Offline / air-gapped (Windows)
+
+For a target machine with no internet access, pack the dependencies on an
+online machine and install from the bundle on the target. Both machines must
+run the **same OS and Python version** (wheels are platform-specific).
+
+```powershell
+# 1. On the ONLINE dev machine (code already on the latest main):
+git pull
+.\scripts\pack_offline.ps1        # produces ..\mcp-server-offline.zip
+
+# 2. Copy the zip to the OFFLINE target, unzip it, then:
+.\scripts\install_offline.ps1     # creates .venv, installs all wheels
+copy config.toml.example config.toml   # then edit config.toml
+```
+
+`pack_offline.ps1` reads dependencies straight from `pyproject.toml`, so any
+package you add later is bundled automatically — no need to edit the script.
+`install_offline.ps1` points the venv at the live `src/` tree, so afterwards a
+plain `git pull` (or unzipping a newer bundle) updates the server with no
+reinstall — unless `pyproject.toml` dependencies changed, in which case re-run
+`pack_offline.ps1` to refresh the bundle.
+
 ### Logging
 
 Logging is configured with environment variables (not config.toml):
