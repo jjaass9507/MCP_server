@@ -140,7 +140,7 @@ never exposed to the model. Call `api_list_services()` first to see what's avail
 |------|-------------|
 | `api_list_services()` | List configured API service names |
 | `api_request(service, method, path, query, json_body)` | Make an HTTP request to a named service; returns `{status, body}` |
-| `push_notify(service, title, content, push_to_list)` | Send a Push+ notification; fills the template's `$_title` / `$_content` (content may be inline HTML) |
+| `push_notify(service, title, content, image_path, push_to_list)` | Send a Push+ notification; fills the template's `$_title` / `$_content` (content may be inline HTML). `image_path` embeds an image file as inline base64 — the server encodes it, so you never paste base64 yourself |
 
 The `token`/`api_key` is read from the service's `config.toml` block and never exposed to the model. For an internal service whose TLS certificate is not publicly trusted, set `verify = false` in its service block to skip certificate verification.
 

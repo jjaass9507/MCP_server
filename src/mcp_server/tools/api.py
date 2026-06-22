@@ -18,6 +18,10 @@ HOW TO ADD A NEW API
 
 from typing import TYPE_CHECKING, Any
 
+import base64
+import mimetypes
+import pathlib
+
 import httpx
 
 from mcp.server.fastmcp import FastMCP
@@ -32,6 +36,10 @@ logger = get_logger("api")
 
 # Cap response bodies so a huge payload can't blow up the context window.
 _MAX_BODY_BYTES = 100_000
+
+# Reject oversized images early — a multi-MB base64 blob bloats the request and
+# is usually rejected by the push backend anyway.
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 def _response_payload(resp: httpx.Response) -> dict:
@@ -48,6 +56,28 @@ def _response_payload(resp: httpx.Response) -> dict:
     if truncated and isinstance(body, str):
         body = {"_truncated": True, "text": body}
     return {"status": resp.status_code, "body": body}
+
+
+def _image_to_img_tag(image_path: str, cfg: "_CfgModule") -> str:
+    """Read an image file and return an inline base64 <img> tag.
+
+    Encoding happens here on the server so a huge base64 string never has to
+    pass through the model's output. The path is access-checked against
+    allowed_paths via cfg.check_path.
+    """
+    p = pathlib.Path(image_path).resolve()
+    cfg.check_path(p)  # raises ToolError if outside allowed_paths
+    if not p.is_file():
+        raise ToolError(f"Image file not found: {p}")
+    data = p.read_bytes()
+    if len(data) > _MAX_IMAGE_BYTES:
+        raise ToolError(
+            f"Image is too large ({len(data)} bytes, limit {_MAX_IMAGE_BYTES}). "
+            f"Export a smaller chart (e.g. lower DPI) and try again."
+        )
+    mime = mimetypes.guess_type(p.name)[0] or "image/jpeg"
+    b64 = base64.b64encode(data).decode("ascii")
+    return f"<img src='data:{mime};base64,{b64}'>"
 
 
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
@@ -134,13 +164,20 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
     # ---------------------------------------------------------------
 
     @mcp.tool()
-    def push_notify(service: str = "", title: str = "", content: str = "", push_to_list: list = []) -> dict:
+    def push_notify(service: str = "", title: str = "", content: str = "",
+                    image_path: str = "", push_to_list: list = []) -> dict:
         """Send a push notification via a configured Push+ service (email / group).
 
         Fills the Push+ template's $_title and $_content variables. `content` may
         contain simple inline HTML so key facts render nicely — e.g.
-        content="<b>Order</b>: 12345<br><b>Status</b>: shipped". Images can be
-        embedded with an inline base64 <img> tag.
+        content="<b>Order</b>: 12345<br><b>Status</b>: shipped".
+
+        To attach an image (e.g. a chart), pass image_path — a path to an image
+        FILE on the server (must be inside allowed_paths in config.toml). The
+        server reads the file and embeds it as an inline base64 <img> appended to
+        the content. Do NOT paste base64 into content yourself: a base64 blob is
+        huge and will blow past the model's output token limit. Hand over a file
+        path and let the server do the encoding.
 
         Recipients default to the Push+ template's configured list — pass push_to_list
         (e.g. ["K12345","K22345"]) only to override them.
@@ -151,6 +188,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             service:      Push+ service name from config.toml. Auto-selected if only one is configured.
             title:        Subject / heading; fills the template's $_title variable.
             content:      Body text; may include simple inline HTML. Fills the $_content variable.
+            image_path:   Optional path to an image file to embed (JPG renders most reliably in email/Notes).
             push_to_list: Optional list of recipient IDs that REPLACES the template's recipients.
         """
         svc = cfg.resolve_api(_resolve_service_name(service))
@@ -161,9 +199,13 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 f'Add token = "..." under its [api.services.*] block in config.toml.'
             )
 
+        body_html = content
+        if image_path:
+            body_html += _image_to_img_tag(image_path, cfg)
+
         payload: dict[str, Any] = {
             "token": token,
-            "push_para": {"title": title, "content": content},
+            "push_para": {"title": title, "content": body_html},
         }
         if push_to_list:
             payload["push_to_list"] = push_to_list
