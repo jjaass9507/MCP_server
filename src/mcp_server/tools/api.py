@@ -134,12 +134,13 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
     # ---------------------------------------------------------------
 
     @mcp.tool()
-    def push_notify(service: str = "", push_para: dict = {}, push_to_list: list = []) -> dict:
+    def push_notify(service: str = "", title: str = "", content: str = "", push_to_list: list = []) -> dict:
         """Send a push notification via a configured Push+ service (email / group).
 
-        The Push+ template uses {{$_xxx}} placeholders; pass push_para={"xxx": "value"}
-        to fill them. E.g. template "Hi {{$_user_name}}" + push_para={"user_name": "Push+"}
-        renders "Hi Push+". Content may be HTML.
+        Fills the Push+ template's $_title and $_content variables. `content` may
+        contain simple inline HTML so key facts render nicely — e.g.
+        content="<b>Order</b>: 12345<br><b>Status</b>: shipped". Images can be
+        embedded with an inline base64 <img> tag.
 
         Recipients default to the Push+ template's configured list — pass push_to_list
         (e.g. ["K12345","K22345"]) only to override them.
@@ -148,7 +149,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
         Args:
             service:      Push+ service name from config.toml. Auto-selected if only one is configured.
-            push_para:    Optional dict of template variable -> value substitutions.
+            title:        Subject / heading; fills the template's $_title variable.
+            content:      Body text; may include simple inline HTML. Fills the $_content variable.
             push_to_list: Optional list of recipient IDs that REPLACES the template's recipients.
         """
         svc = cfg.resolve_api(_resolve_service_name(service))
@@ -159,9 +161,10 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 f'Add token = "..." under its [api.services.*] block in config.toml.'
             )
 
-        payload: dict[str, Any] = {"token": token}
-        if push_para:
-            payload["push_para"] = push_para
+        payload: dict[str, Any] = {
+            "token": token,
+            "push_para": {"title": title, "content": content},
+        }
         if push_to_list:
             payload["push_to_list"] = push_to_list
 
