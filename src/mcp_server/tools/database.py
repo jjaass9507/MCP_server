@@ -91,14 +91,54 @@ def _mssql_conn(dsn: str):
             conn.close()
 
 
+def _parse_oracle_dsn(dsn: str) -> dict[str, Any]:
+    """Parse oracle://user:password@host:port/service_name into oracledb.connect kwargs."""
+    parsed = urllib.parse.urlparse(dsn)
+    service = parsed.path.lstrip("/")
+    if not parsed.hostname or not service:
+        raise ToolError(
+            f"Invalid Oracle DSN: '{dsn}'. "
+            f"Expected 'oracle://user:password@host:port/service_name'."
+        )
+    return {
+        "user": urllib.parse.unquote(parsed.username) if parsed.username else None,
+        "password": urllib.parse.unquote(parsed.password) if parsed.password else None,
+        "dsn": f"{parsed.hostname}:{parsed.port or 1521}/{service}",
+    }
+
+
+@contextlib.contextmanager
+def _oracle_conn(dsn: str):
+    try:
+        import oracledb
+    except ImportError as e:
+        raise ToolError(
+            "oracledb is not installed. "
+            "Run: pip install oracledb"
+        ) from e
+    conn = None
+    try:
+        conn = oracledb.connect(**_parse_oracle_dsn(dsn))
+        with conn.cursor() as cur:
+            yield cur
+    except oracledb.Error as e:
+        raise ToolError(f"Database error: {e}") from e
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @contextlib.contextmanager
 def _get_conn(dsn: str, cfg: "_CfgModule"):
-    """Yield a unified cursor-like object for SQLite, PostgreSQL or SQL Server."""
+    """Yield a unified cursor-like object for SQLite, PostgreSQL, SQL Server or Oracle."""
     if cfg.is_postgres(dsn):
         with _pg_conn(dsn) as cur:
             yield cur
     elif cfg.is_mssql(dsn):
         with _mssql_conn(dsn) as cur:
+            yield cur
+    elif cfg.is_oracle(dsn):
+        with _oracle_conn(dsn) as cur:
             yield cur
     else:
         with _sqlite_conn(dsn) as conn:
@@ -139,12 +179,12 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
         Returns query results as a JSON string (list of row objects).
         Only SELECT statements are allowed; use db_execute for writes.
-        Supports both SQLite (file path) and PostgreSQL (DSN) connections.
+        Supports SQLite (file path), PostgreSQL, SQL Server and Oracle connections.
 
         Args:
             db_name: Database name from config.toml (e.g. 'mydb'). Use db_list_databases() to see options.
             sql:     A SELECT SQL statement.
-            params:  Optional positional parameters (%s for PostgreSQL, ? for SQLite).
+            params:  Optional positional parameters (%s for PostgreSQL/SQL Server, ? for SQLite, :1 for Oracle).
         """
         if not sql.strip().upper().startswith("SELECT"):
             raise ToolError("db_query only accepts SELECT statements. Use db_execute for INSERT/UPDATE/DELETE.")
@@ -153,6 +193,10 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             if cfg.is_postgres(dsn) or cfg.is_mssql(dsn):
                 cur.execute(sql, params or None)
                 rows = cur.fetchall()
+            elif cfg.is_oracle(dsn):
+                cur.execute(sql, params or [])
+                cols = [d[0] for d in cur.description]
+                rows = [dict(zip(cols, row)) for row in cur.fetchall()]
             else:
                 cursor = cur.execute(sql, params)
                 rows = [dict(row) for row in cursor.fetchall()]
@@ -174,6 +218,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         if first_word == "SELECT":
             raise ToolError("db_execute does not accept SELECT. Use db_query for reads.")
         dsn = cfg.resolve_db(_resolve_db_name(db_name))
+        if cfg.is_oracle(dsn):
+            raise ToolError("Oracle connections are read-only in this server. Use db_query for SELECT.")
         with _get_conn(dsn, cfg) as cur:
             if cfg.is_postgres(dsn) or cfg.is_mssql(dsn):
                 cur.execute(sql, params or None)
@@ -204,16 +250,21 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             db_name: Database name from config.toml. Auto-selected if only one is configured.
         """
         dsn = cfg.resolve_db(_resolve_db_name(db_name))
-        if not cfg.is_postgres(dsn) and not cfg.is_mssql(dsn):
+        if not cfg.is_postgres(dsn) and not cfg.is_mssql(dsn) and not cfg.is_oracle(dsn):
             return "SQLite does not use schemas. Use db_list_tables() directly."
         with _get_conn(dsn, cfg) as cur:
-            if cfg.is_mssql(dsn):
+            if cfg.is_oracle(dsn):
+                # In Oracle a "schema" is the owning user; list owners that have tables.
+                cur.execute("SELECT DISTINCT owner FROM all_tables ORDER BY owner")
+                schemas = [row[0] for row in cur.fetchall()]
+            elif cfg.is_mssql(dsn):
                 cur.execute(
                     "SELECT name AS schema_name FROM sys.schemas "
                     "WHERE name NOT IN ('sys','INFORMATION_SCHEMA','guest') "
                     "AND name NOT LIKE 'db\\_%' ESCAPE '\\' "
                     "ORDER BY name"
                 )
+                schemas = [row["schema_name"] for row in cur.fetchall()]
             else:
                 cur.execute(
                     "SELECT schema_name FROM information_schema.schemata "
@@ -221,7 +272,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     "AND schema_name NOT LIKE 'pg_temp_%' AND schema_name NOT LIKE 'pg_toast_temp_%' "
                     "ORDER BY schema_name"
                 )
-            schemas = [row["schema_name"] for row in cur.fetchall()]
+                schemas = [row["schema_name"] for row in cur.fetchall()]
         if not schemas:
             return "No user-defined schemas found."
         return f"Available schemas: {', '.join(schemas)}. Pass one as the schema parameter in db_list_tables()."
@@ -263,6 +314,16 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     (mssql_schema,),
                 )
                 tables = [row["name"] for row in cur.fetchall()]
+            elif cfg.is_oracle(dsn):
+                if schema == "public":
+                    # Default: the connecting user's own tables.
+                    cur.execute("SELECT table_name FROM user_tables ORDER BY table_name")
+                else:
+                    cur.execute(
+                        "SELECT table_name FROM all_tables WHERE owner = :1 ORDER BY table_name",
+                        [schema.upper()],
+                    )
+                tables = [row[0] for row in cur.fetchall()]
             else:
                 cursor = cur.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -341,6 +402,50 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 if not rows:
                     raise ToolError(f"Table '{table_name}' not found in schema '{mssql_schema}'. Try db_list_schemas() to see available schemas.")
                 return json.dumps(rows, ensure_ascii=False, default=str)
+            elif cfg.is_oracle(dsn):
+                # Oracle identifiers are upper-case; "schema" is the owning user.
+                table = table_name.upper()
+                if schema == "public":
+                    owner_row = cur.execute("SELECT USER FROM dual").fetchone()
+                    owner = owner_row[0]
+                else:
+                    owner = schema.upper()
+                cur.execute(
+                    """
+                    SELECT
+                        c.column_name,
+                        c.data_type,
+                        CASE WHEN c.nullable = 'N' THEN 1 ELSE 0 END,
+                        c.data_default,
+                        CASE WHEN pk.column_name IS NOT NULL THEN 1 ELSE 0 END
+                    FROM all_tab_columns c
+                    LEFT JOIN (
+                        SELECT acc.column_name
+                        FROM all_constraints ac
+                        JOIN all_cons_columns acc
+                          ON ac.constraint_name = acc.constraint_name
+                         AND ac.owner = acc.owner
+                        WHERE ac.constraint_type = 'P'
+                          AND ac.table_name = :tbl AND ac.owner = :own
+                    ) pk ON pk.column_name = c.column_name
+                    WHERE c.table_name = :tbl AND c.owner = :own
+                    ORDER BY c.column_id
+                    """,
+                    {"tbl": table, "own": owner},
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    raise ToolError(f"Table '{table}' not found in schema '{owner}'. Try db_list_schemas() to see available schemas.")
+                return json.dumps([
+                    {
+                        "name": row[0],
+                        "type": row[1],
+                        "notnull": bool(row[2]),
+                        "default_value": row[3],
+                        "is_primary_key": bool(row[4]),
+                    }
+                    for row in rows
+                ], ensure_ascii=False, default=str)
             else:
                 cursor = cur.execute(f"PRAGMA table_info({table_name})")
                 rows = cursor.fetchall()
@@ -370,6 +475,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             script:  One or more SQL statements.
         """
         dsn = cfg.resolve_db(db_name)
+        if cfg.is_oracle(dsn):
+            raise ToolError("Oracle connections are read-only in this server. Use db_query for SELECT.")
         try:
             if cfg.is_postgres(dsn):
                 with _pg_conn(dsn) as cur:

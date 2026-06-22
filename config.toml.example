@@ -22,11 +22,12 @@ allowed_paths = [
 allow_write = true
 
 [database]
-# Named aliases for SQLite, PostgreSQL or SQL Server databases.
+# Named aliases for SQLite, PostgreSQL, SQL Server or Oracle databases.
 # Tools accept db_name (the key) instead of a raw path or DSN.
 # SQLite     → absolute file path
 # PostgreSQL → postgresql://user:password@host:port/dbname
 # SQL Server → mssql://user:password@host:port/dbname
+# Oracle     → oracle://user:password@host:port/service_name  (read-only)
 [database.connections]
 mydb      = "/home/user/data/mydb.sqlite"
 analytics = "/home/user/data/analytics.sqlite"
@@ -40,6 +41,10 @@ analytics = "/home/user/data/analytics.sqlite"
 # 'jdbc:sqlserver://db:1433;databaseName=fac_power;user=aa;password=aa;...'
 # becomes:
 # MSSQL    = "mssql://aa:aa@db:1433/fac_power"
+
+# Oracle example (READ-ONLY: db_query / db_list_* / db_table_schema only).
+# Uses the service name (not SID) after the slash. Query binds use :1 / :name.
+# ora      = "oracle://scott:tiger@db:1521/XEPDB1"
 
 [api]
 # External HTTP APIs the server may call, addressed by a service name (the key).
