@@ -114,6 +114,32 @@ def list_db_names() -> list[str]:
     return list(_db_connections.keys())
 
 
+# ── API helpers ────────────────────────────────────────────────────────────
+
+_api_services: dict[str, Any] = _config.get("api", {}).get("services", {})
+
+
+def list_api_names() -> list[str]:
+    """Return all configured API service names."""
+    return list(_api_services.keys())
+
+
+def resolve_api(name: str) -> dict:
+    """Return the configuration dict for a named API service."""
+    if name not in _api_services:
+        available = list(_api_services.keys())
+        if available:
+            raise ToolError(
+                f"Unknown API service '{name}'. "
+                f"Available services: {available}"
+            )
+        raise ToolError(
+            "No API services are configured. "
+            "Add entries under [api.services] in config.toml."
+        )
+    return _api_services[name]
+
+
 # ── Presentation defaults ──────────────────────────────────────────────────
 
 _presentation_cfg: dict[str, Any] = _config.get("presentation", {})
@@ -183,6 +209,15 @@ def validate_config() -> list[str]:
                 f"database.connections['{name}'] points to '{dsn}' "
                 f"but the parent directory '{db_path.parent}' does not exist"
             )
+
+    # API: every configured service must have a non-empty base_url string.
+    for name, svc in _api_services.items():
+        if not isinstance(svc, dict):
+            errors.append(f"api.services['{name}'] must be a table (key = value entries)")
+            continue
+        base_url = svc.get("base_url")
+        if not isinstance(base_url, str) or not base_url.strip():
+            errors.append(f"api.services['{name}'] is missing a non-empty 'base_url'")
 
     if errors:
         raise ConfigError(

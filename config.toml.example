@@ -41,6 +41,42 @@ analytics = "/home/user/data/analytics.sqlite"
 # becomes:
 # MSSQL    = "mssql://aa:aa@db:1433/fac_power"
 
+[api]
+# External HTTP APIs the server may call, addressed by a service name (the key).
+# The model uses the service name (e.g. "weather"); the api_key never leaves
+# the server. base_url is required; the auth fields are only needed if the
+# API expects a key in a header.
+#
+# API Key / Bearer token style (Authorization: Bearer <key>):
+# [api.services.weather]
+# base_url    = "https://api.openweathermap.org/data/2.5"
+# api_key     = "your-key-here"
+# auth_header = "Authorization"   # header name the key goes into
+# auth_prefix = "Bearer "         # prefix before the key
+#
+# X-API-Key style (X-API-Key: <key>):
+# [api.services.someservice]
+# base_url    = "https://api.example.com"
+# api_key     = "abc123"
+# auth_header = "X-API-Key"
+# auth_prefix = ""
+#
+# Optional extra static headers per service:
+# [api.services.weather.headers]
+# Accept = "application/json"
+#
+# Public API with no key (just omit the api_key/auth_* fields):
+# [api.services.httpbin]
+# base_url = "https://httpbin.org"
+#
+# Push+ 2.0 notification API (token goes in the POST body — used by push_notify):
+# verify = false skips TLS certificate verification, for internal services whose
+# certificate is not publicly trusted.
+# [api.services.pushplus]
+# base_url = "https://pushplus.kh.asegroup.com/v1/web_api/"
+# token    = "your-token-here"
+# verify   = false
+
 [presentation]
 # Default style applied to every presentation when not explicitly overridden.
 # The agent does NOT need to specify these — they are applied automatically.
