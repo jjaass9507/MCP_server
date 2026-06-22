@@ -34,6 +34,22 @@ logger = get_logger("api")
 _MAX_BODY_BYTES = 100_000
 
 
+def _response_payload(resp: httpx.Response) -> dict:
+    """Build the {"status", "body"} result from an httpx response.
+
+    Parses JSON when possible, falls back to text, and truncates oversized bodies.
+    """
+    raw = resp.content[:_MAX_BODY_BYTES]
+    truncated = len(resp.content) > _MAX_BODY_BYTES
+    try:
+        body: Any = resp.json() if not truncated else raw.decode("utf-8", "replace")
+    except ValueError:
+        body = raw.decode("utf-8", "replace")
+    if truncated and isinstance(body, str):
+        body = {"_truncated": True, "text": body}
+    return {"status": resp.status_code, "body": body}
+
+
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     def _resolve_service_name(service: str) -> str:
@@ -94,7 +110,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         url = svc["base_url"].rstrip("/") + "/" + path.lstrip("/")
 
         try:
-            with httpx.Client(timeout=30) as client:
+            with httpx.Client(timeout=30, verify=svc.get("verify", True)) as client:
                 resp = client.request(
                     method.upper(),
                     url,
@@ -111,17 +127,51 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             service, method.upper(), path, resp.status_code,
         )
 
-        raw = resp.content[:_MAX_BODY_BYTES]
-        truncated = len(resp.content) > _MAX_BODY_BYTES
-        try:
-            body: Any = resp.json() if not truncated else raw.decode("utf-8", "replace")
-        except ValueError:
-            body = raw.decode("utf-8", "replace")
-        if truncated:
-            body = {"_truncated": True, "text": body} if isinstance(body, str) else body
-
-        return {"status": resp.status_code, "body": body}
+        return _response_payload(resp)
 
     # ---------------------------------------------------------------
     # Add per-API convenience wrappers below, following the pattern above.
     # ---------------------------------------------------------------
+
+    @mcp.tool()
+    def push_notify(service: str = "", push_para: dict = {}, push_to_list: list = []) -> dict:
+        """Send a push notification via a configured Push+ service (email / group).
+
+        The Push+ template uses {{$_xxx}} placeholders; pass push_para={"xxx": "value"}
+        to fill them. E.g. template "Hi {{$_user_name}}" + push_para={"user_name": "Push+"}
+        renders "Hi Push+". Content may be HTML.
+
+        Recipients default to the Push+ template's configured list — pass push_to_list
+        (e.g. ["K12345","K22345"]) only to override them.
+
+        Returns {"status": int, "body": <parsed JSON or text>}.
+
+        Args:
+            service:      Push+ service name from config.toml. Auto-selected if only one is configured.
+            push_para:    Optional dict of template variable -> value substitutions.
+            push_to_list: Optional list of recipient IDs that REPLACES the template's recipients.
+        """
+        svc = cfg.resolve_api(_resolve_service_name(service))
+        token = svc.get("token") or svc.get("api_key")
+        if not token:
+            raise ToolError(
+                f"Push service '{service or 'default'}' has no token. "
+                f'Add token = "..." under its [api.services.*] block in config.toml.'
+            )
+
+        payload: dict[str, Any] = {"token": token}
+        if push_para:
+            payload["push_para"] = push_para
+        if push_to_list:
+            payload["push_to_list"] = push_to_list
+
+        try:
+            with httpx.Client(timeout=30, verify=svc.get("verify", True)) as client:
+                resp = client.post(svc["base_url"], json=payload)
+        except httpx.HTTPError as e:
+            raise ToolError(f"Push notification failed: {e}") from e
+
+        # Never log the token or message contents — only service + status.
+        logger.info("push_notify: service=%s -> %s", service or "default", resp.status_code)
+
+        return _response_payload(resp)

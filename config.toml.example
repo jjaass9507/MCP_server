@@ -68,6 +68,14 @@ analytics = "/home/user/data/analytics.sqlite"
 # Public API with no key (just omit the api_key/auth_* fields):
 # [api.services.httpbin]
 # base_url = "https://httpbin.org"
+#
+# Push+ 2.0 notification API (token goes in the POST body — used by push_notify):
+# verify = false skips TLS certificate verification, for internal services whose
+# certificate is not publicly trusted.
+# [api.services.pushplus]
+# base_url = "https://pushplus.kh.asegroup.com/v1/web_api/"
+# token    = "your-token-here"
+# verify   = false
 
 [presentation]
 # Default style applied to every presentation when not explicitly overridden.

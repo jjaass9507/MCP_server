@@ -140,6 +140,9 @@ never exposed to the model. Call `api_list_services()` first to see what's avail
 |------|-------------|
 | `api_list_services()` | List configured API service names |
 | `api_request(service, method, path, query, json_body)` | Make an HTTP request to a named service; returns `{status, body}` |
+| `push_notify(service, push_para, push_to_list)` | Send a Push+ notification; fills `{{$_var}}` template placeholders via `push_para` |
+
+The `token`/`api_key` is read from the service's `config.toml` block and never exposed to the model. For an internal service whose TLS certificate is not publicly trusted, set `verify = false` in its service block to skip certificate verification.
 
 ### Custom / Utility
 
