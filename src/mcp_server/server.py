@@ -19,7 +19,8 @@ def create_server() -> FastMCP:
             "Filesystem and database access is restricted to paths configured in config.toml. "
             "Call db_list_databases() to see available databases before querying. "
             "Call api_list_services() to see available external APIs before calling api_request(). "
-            "Use push_notify() to send a Push+ notification to email or a group. "
+            "Use push_notify() to send a Push+ notification to email or a group; always format its "
+            "content as clean inline HTML and verify the sent_content in the result is correct. "
             "Call list_presentation_styles() to see slide presets before calling create_presentation()."
         ),
     )

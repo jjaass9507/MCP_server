@@ -58,12 +58,13 @@ def _response_payload(resp: httpx.Response) -> dict:
     return {"status": resp.status_code, "body": body}
 
 
-def _image_to_img_tag(image_path: str, cfg: "_CfgModule") -> str:
-    """Read an image file and return an inline base64 <img> tag.
+def _image_to_img_tag(image_path: str, cfg: "_CfgModule") -> tuple[str, str]:
+    """Read an image file and return (inline base64 <img> tag, short summary).
 
     Encoding happens here on the server so a huge base64 string never has to
     pass through the model's output. The path is access-checked against
-    allowed_paths via cfg.check_path.
+    allowed_paths via cfg.check_path. The summary is a compact description
+    (no base64) so callers can confirm what was attached.
     """
     p = pathlib.Path(image_path).resolve()
     cfg.check_path(p)  # raises ToolError if outside allowed_paths
@@ -77,7 +78,9 @@ def _image_to_img_tag(image_path: str, cfg: "_CfgModule") -> str:
         )
     mime = mimetypes.guess_type(p.name)[0] or "image/jpeg"
     b64 = base64.b64encode(data).decode("ascii")
-    return f"<img src='data:{mime};base64,{b64}'>"
+    tag = f"<img src='data:{mime};base64,{b64}'>"
+    summary = f"{p.name} ({mime}, {len(data)} bytes)"
+    return tag, summary
 
 
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
@@ -168,9 +171,13 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     image_path: str = "", push_to_list: list = []) -> dict:
         """Send a push notification via a configured Push+ service (email / group).
 
-        Fills the Push+ template's $_title and $_content variables. `content` may
-        contain simple inline HTML so key facts render nicely — e.g.
-        content="<b>Order</b>: 12345<br><b>Status</b>: shipped".
+        ALWAYS format `content` as clean inline HTML for a polished result — never
+        send a raw unformatted dump. Use <b> for field labels, <br> for line
+        breaks, and a simple <table> with inline styles for tabular data, e.g.
+        content="<b>Order</b>: 12345<br><b>Status</b>: <span style='color:green'>shipped</span>".
+        Before calling, double-check that every value in `content` is accurate and
+        the HTML tags are balanced. After the call returns, verify the echoed
+        `sent_content` matches what you intended.
 
         To attach an image (e.g. a chart), pass image_path — a path to an image
         FILE on the server (must be inside allowed_paths in config.toml). The
@@ -182,12 +189,14 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         Recipients default to the Push+ template's configured list — pass push_to_list
         (e.g. ["K12345","K22345"]) only to override them.
 
-        Returns {"status": int, "body": <parsed JSON or text>}.
+        Returns {"status": int, "body": <parsed JSON or text>, "sent_content": str,
+        "image": str|None} — sent_content echoes the HTML sent (base64 omitted) so
+        you can confirm the output is correct.
 
         Args:
             service:      Push+ service name from config.toml. Auto-selected if only one is configured.
             title:        Subject / heading; fills the template's $_title variable.
-            content:      Body text; may include simple inline HTML. Fills the $_content variable.
+            content:      Body as clean inline HTML (required formatting, see above). Fills $_content.
             image_path:   Optional path to an image file to embed (JPG renders most reliably in email/Notes).
             push_to_list: Optional list of recipient IDs that REPLACES the template's recipients.
         """
@@ -200,8 +209,10 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             )
 
         body_html = content
+        image_summary: str | None = None
         if image_path:
-            body_html += _image_to_img_tag(image_path, cfg)
+            img_tag, image_summary = _image_to_img_tag(image_path, cfg)
+            body_html += img_tag
 
         payload: dict[str, Any] = {
             "token": token,
@@ -219,4 +230,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         # Never log the token or message contents — only service + status.
         logger.info("push_notify: service=%s -> %s", service or "default", resp.status_code)
 
-        return _response_payload(resp)
+        # Echo the HTML sent (without the base64 image blob) so the caller can
+        # confirm the output is correct.
+        result = _response_payload(resp)
+        result["sent_content"] = content
+        result["image"] = image_summary
+        return result
