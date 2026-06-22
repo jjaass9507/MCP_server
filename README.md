@@ -1,9 +1,10 @@
 # MCP Server
 
-A modular Python MCP (Model Context Protocol) server that exposes three categories of tools to AI clients:
+A modular Python MCP (Model Context Protocol) server that exposes several categories of tools to AI clients:
 
 - **Filesystem** — read, write, list, search, and inspect files
 - **Database** — query and modify SQLite databases (by name alias, not raw path)
+- **API** — call external HTTP/REST APIs (by service name alias, not raw URL/key)
 - **Custom** — utility tools and a template for adding your own business logic
 
 Access to files and databases is controlled by `config.toml` — the model can only touch what you explicitly allow.
@@ -129,6 +130,17 @@ Tools use a `db_name` alias from `config.toml` instead of a raw file path. Call 
 | `db_table_schema(db_name, table_name)` | Get column definitions |
 | `db_execute_script(db_name, script)` | Run a multi-statement SQL script |
 
+### API (external HTTP)
+
+Services are configured under `[api.services]` in `config.toml`. Tools use a
+`service` name alias; the `base_url` and `api_key` are injected server-side and
+never exposed to the model. Call `api_list_services()` first to see what's available.
+
+| Tool | Description |
+|------|-------------|
+| `api_list_services()` | List configured API service names |
+| `api_request(service, method, path, query, json_body)` | Make an HTTP request to a named service; returns `{status, body}` |
+
 ### Custom / Utility
 
 | Tool | Description |
@@ -219,6 +231,48 @@ from mcp_server.tools import my_category
 my_category.register(mcp)
 ```
 
+## Adding an API
+
+External REST APIs are config-driven — no code needed for the common case.
+
+**1. Add a service to `config.toml`** (API Key / Bearer token example):
+
+```toml
+[api.services.weather]
+base_url    = "https://api.openweathermap.org/data/2.5"
+api_key     = "your-key-here"
+auth_header = "Authorization"   # or "X-API-Key"
+auth_prefix = "Bearer "         # use "" for X-API-Key style
+```
+
+For a public, key-less API just set `base_url`. The model only ever sees the
+service name (`weather`) — the key stays on the server, like database aliases.
+
+**2. Call it** via the generic tool:
+
+```
+api_request(service="weather", path="/weather", query={"q": "Taipei", "units": "metric"})
+```
+
+**3. (Optional) Add a typed convenience wrapper** in `src/mcp_server/tools/api.py`
+when you want a clearer, self-documenting tool (e.g. `get_weather(city)`).
+
+### What to give me to wire up a new API
+
+When you want help adding one, the following is enough (most copies straight
+from the API's docs):
+
+1. **Service name** — the alias you want (e.g. `weather`, `twse`).
+2. **base_url** — the API's root URL.
+3. **Auth** — header name (`Authorization` vs `X-API-Key`), prefix (`Bearer ` or
+   empty), and the key (a placeholder is fine; put the real key in `config.toml` yourself).
+4. **Endpoint(s)** — method + path (e.g. `GET /weather`) and the query/body params.
+5. **(Optional) A sample response** — a JSON snippet, so I can build a typed
+   wrapper that surfaces just the fields you care about.
+
+Items 1–3 are enough to call the API via `api_request`. Add 4–5 and I can write
+a dedicated convenience tool with a clear docstring.
+
 ## Project Structure
 
 ```
@@ -238,6 +292,7 @@ MCP_server/
 │       ├── tools/
 │       │   ├── filesystem.py
 │       │   ├── database.py
+│       │   ├── api.py
 │       │   └── custom.py
 │       └── utils/
 │           ├── errors.py
