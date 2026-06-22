@@ -18,10 +18,12 @@ $ProxyArg = if ($Proxy) { @("--proxy", $Proxy) } else { @() }
 # Build backend needed to build this project's wheel
 pip install @ProxyArg hatchling
 
-# Download all runtime dependencies as wheels
+# Download all runtime dependencies as wheels.
+# Read them straight from pyproject.toml (pip download .) so newly added
+# dependencies are packed automatically — no need to edit this list by hand.
 $PkgDir = Join-Path $Root "offline_packages"
 New-Item -ItemType Directory -Force -Path $PkgDir | Out-Null
-pip download @ProxyArg "mcp[cli]>=1.0.0" "psycopg[binary]>=3.1" -d $PkgDir
+pip download @ProxyArg . -d $PkgDir
 
 # Also download the hatchling build backend so the target can do an EDITABLE
 # install (pip install -e .) fully offline. Editable mode means the target's
