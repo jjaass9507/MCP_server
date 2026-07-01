@@ -96,40 +96,36 @@ def _fetch_points(
 ) -> list[dict]:
     """Query v_point_detail for a building+device_id.
 
-    building+device_id alone is not guaranteed unique (e.g. two 'A1' units,
-    one an air compressor and one a dryer), so category (broad class, e.g.
-    空壓機/乾燥機/真空機) and/or equipment_type (specific type, e.g.
-    離心機/變頻螺旋機) join against v_equipment_list to disambiguate when
-    provided. Either, both, or neither may be given.
+    building+device_id alone is not guaranteed unique (e.g. two 'A4' units,
+    one an air compressor and one a dryer). v_point_detail carries its own
+    category (broad class, e.g. 空壓機/乾燥機/真空機) and equipment_type
+    (specific type, e.g. 離心機/變頻螺旋機) columns, so filtering happens
+    directly on this table — no join against v_equipment_list needed (a
+    join on building+device_id alone cannot discriminate between equipment
+    sharing the same device_id, since it only gates on whether a matching
+    equipment_list row exists, not which point rows belong to it).
     """
     dsn = cfg.resolve_db(CATALOG_DB)
-    where = ["p.building = %(building)s", "p.device_id = %(device_id)s"]
+    where = ["building = %(building)s", "device_id = %(device_id)s"]
     params: dict[str, Any] = {"building": building, "device_id": device_id}
-    join = ""
-    if category or equipment_type:
-        join = (
-            'JOIN "GMS_agent".v_equipment_list e '
-            "ON e.building = p.building AND e.device_id = p.device_id"
-        )
-        if category:
-            where.append("e.category = %(category)s")
-            params["category"] = category
-        if equipment_type:
-            where.append("e.equipment_type = %(equipment_type)s")
-            params["equipment_type"] = equipment_type
+    if category:
+        where.append("category = %(category)s")
+        params["category"] = category
+    if equipment_type:
+        where.append("equipment_type = %(equipment_type)s")
+        params["equipment_type"] = equipment_type
     if keyword:
-        where.append("p.point_name LIKE %(keyword)s")
+        where.append("point_name LIKE %(keyword)s")
         params["keyword"] = f"%{keyword}%"
     if require_scada:
-        where.append("p.scada_available = TRUE")
-        where.append("p.tag_name IS NOT NULL")
+        where.append("scada_available = TRUE")
+        where.append("tag_name IS NOT NULL")
     sql = f"""
-        SELECT p.point_seq, p.point_name, p.phase, p.unit, p.tag_name,
-               p.scada_available, p.remark
-        FROM "GMS_agent".v_point_detail p
-        {join}
+        SELECT point_seq, point_name, phase, unit, tag_name,
+               scada_available, remark
+        FROM "GMS_agent".v_point_detail
         WHERE {' AND '.join(where)}
-        ORDER BY p.point_seq, p.phase
+        ORDER BY point_seq, phase
     """
     return database.run_select(dsn, cfg, sql, params)
 
