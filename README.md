@@ -145,8 +145,8 @@ compressed-air queries; fall back to `db_query` for anything ad-hoc.
 | `gms_list_equipment(building, category, equipment_type, floor)` | List equipment from the PostgreSQL master (all filters optional) |
 | `gms_list_points(building, device_id, category, equipment_type, keyword)` | List monitoring points/tags for one device; `category` (broad, e.g. 空壓機/乾燥機/真空機) and/or `equipment_type` (specific, e.g. 離心機/變頻螺旋機) disambiguate duplicate `device_id`s |
 | `gms_list_pipe_points(building, system_name)` | List pipe-network points (HCDA/LCDA/HVAC) |
-| `gms_realtime_values(building, device_id, category, equipment_type, keyword, tag_names)` | Latest SCADA value per point, merged from PostgreSQL tags + Oracle values. `tag_names` does an exact match and bypasses the fuzzy `keyword` search — use it once a tag_name is already known from `gms_list_points` |
-| `gms_history_values(building, device_id, start_time, end_time, category, equipment_type, keyword, tag_names)` | Historical value series per point, clamped to a 3-hour window, with per-tag max/min/latest summary. Same `tag_names` exact-match override as above |
+| `gms_realtime_values(building, tag_names)` | Latest SCADA value for a list of already-known tags. Pure Oracle value lookup — resolve `tag_names` via `gms_list_points` first, it does not search by device_id/category/keyword |
+| `gms_history_values(building, start_time, end_time, tag_names)` | Historical value series for a list of already-known tags, clamped to a 3-hour window, with per-tag max/min/latest summary. Same tag_names-only contract as `gms_realtime_values` |
 
 ### API (external HTTP)
 

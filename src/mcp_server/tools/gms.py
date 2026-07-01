@@ -134,6 +134,24 @@ def _fetch_points(
     return database.run_select(dsn, cfg, sql, params)
 
 
+def _fetch_points_by_tags(cfg: "_CfgModule", building: str, tag_names: list[str]) -> list[dict]:
+    """Look up point metadata (point_name/phase/unit) for already-known tag_names.
+
+    Used by gms_realtime_values/gms_history_values, which only consume tags
+    already resolved via gms_list_points — no device_id/category/equipment_type
+    filtering here, since the Oracle side only has TAGNAME/DATETIME/VALUE and
+    these tools' sole job is to fetch values for a confirmed tag list.
+    """
+    dsn = cfg.resolve_db(CATALOG_DB)
+    sql = """
+        SELECT point_seq, point_name, phase, unit, tag_name, scada_available, remark
+        FROM "GMS_agent".v_point_detail
+        WHERE building = %(building)s AND tag_name = ANY(%(tag_names)s)
+        ORDER BY point_seq, phase
+    """
+    return database.run_select(dsn, cfg, sql, {"building": building, "tag_names": tag_names})
+
+
 # ── Oracle: realtime / history value lookup ─────────────────────────────────
 
 def _oracle_latest(cfg: "_CfgModule", oracle_dsn: str, table: str, tags: list[str]) -> list[dict]:
@@ -284,41 +302,27 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         return json.dumps(rows, ensure_ascii=False, default=str)
 
     @mcp.tool()
-    def gms_realtime_values(
-        building: str = "",
-        device_id: str = "",
-        category: str = "",
-        equipment_type: str = "",
-        keyword: str = "",
-        tag_names: list[str] = [],
-    ) -> str:
-        """Get the latest SCADA value for each monitored point of a piece of equipment (Mode D).
+    def gms_realtime_values(building: str = "", tag_names: list[str] = []) -> str:
+        """Get the latest SCADA value for a list of already-known tags (Mode D).
 
-        Looks up tags in PostgreSQL, groups them by Oracle system table (GMS/PMS),
-        batches tags in groups of 10, and merges the latest Oracle values back
-        onto the point metadata.
+        This tool only fetches Oracle values for tag_names you already have —
+        it does not search by device_id/category/equipment_type/keyword. Call
+        gms_list_points first to resolve the tag_name(s) you need. Groups tags
+        by Oracle system table (GMS/PMS), batches in groups of 10, and merges
+        the latest Oracle values with point metadata (point_name/phase/unit)
+        looked up from PostgreSQL by tag_name.
 
         Args:
-            building:       Building code, e.g. 'K18'. Required.
-            device_id:      Equipment number, e.g. 'B4'. Required.
-            category:       Broad equipment category, e.g. '空壓機'/'乾燥機'/'真空機'. Optional.
-            equipment_type: Specific equipment type to disambiguate duplicate device_ids. Optional.
-            keyword:        Substring filter on point_name (LIKE). Optional, ignored if tag_names is set.
-            tag_names:      Exact SCADA tag names to fetch, bypassing the fuzzy keyword match.
-                             Use this when tag_name is already known from a prior
-                             gms_list_points call — do not paraphrase point_name into keyword. Optional.
+            building:  Building code, e.g. 'K18'. Required — used to resolve
+                       the Oracle zone/system table for each tag.
+            tag_names: Exact SCADA tag names to fetch, e.g. from a prior
+                       gms_list_points call. Required.
         """
-        if not building or not device_id:
-            raise ToolError("請提供 building 與 device_id。")
-        points = _fetch_points(
-            cfg, building, device_id, category, equipment_type,
-            "" if tag_names else keyword, require_scada=True,
-        )
-        if tag_names:
-            wanted = set(tag_names)
-            points = [p for p in points if p["tag_name"] in wanted]
+        if not building or not tag_names:
+            raise ToolError("請提供 building 與 tag_names（請先呼叫 gms_list_points 取得確切的 tag_name）。")
+        points = _fetch_points_by_tags(cfg, building, tag_names)
         if not points:
-            raise ToolError("查無有 SCADA 訊號的點位，無法查詢即時值。")
+            raise ToolError("查無對應的點位中繼資料，請確認 tag_names 是否正確。")
 
         by_tag = {p["tag_name"]: p for p in points}
         groups = _group_tags_by_table(building, list(by_tag))
@@ -348,34 +352,30 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
     @mcp.tool()
     def gms_history_values(
         building: str = "",
-        device_id: str = "",
         start_time: str = "",
         end_time: str = "",
-        category: str = "",
-        equipment_type: str = "",
-        keyword: str = "",
         tag_names: list[str] = [],
     ) -> str:
-        """Get a historical value series for each monitored point (Mode E).
+        """Get a historical value series for a list of already-known tags (Mode E).
+
+        This tool only fetches Oracle values for tag_names you already have —
+        it does not search by device_id/category/equipment_type/keyword. Call
+        gms_list_points first to resolve the tag_name(s) you need.
 
         History queries are capped at 3 hours; a longer range is silently
         clamped to the most recent 3 hours of the requested end_time and the
         result reports adjusted=true.
 
         Args:
-            building:       Building code, e.g. 'K18'. Required.
-            device_id:      Equipment number, e.g. 'B4'. Required.
-            start_time:     Range start, 'YYYY-MM-DD HH:MM:SS'. Required.
-            end_time:       Range end, 'YYYY-MM-DD HH:MM:SS'. Required.
-            category:       Broad equipment category, e.g. '空壓機'/'乾燥機'/'真空機'. Optional.
-            equipment_type: Specific equipment type to disambiguate duplicate device_ids. Optional.
-            keyword:        Substring filter on point_name (LIKE). Optional, ignored if tag_names is set.
-            tag_names:      Exact SCADA tag names to fetch, bypassing the fuzzy keyword match.
-                             Use this when tag_name is already known from a prior
-                             gms_list_points call — do not paraphrase point_name into keyword. Optional.
+            building:   Building code, e.g. 'K18'. Required — used to resolve
+                        the Oracle zone/system table for each tag.
+            start_time: Range start, 'YYYY-MM-DD HH:MM:SS'. Required.
+            end_time:   Range end, 'YYYY-MM-DD HH:MM:SS'. Required.
+            tag_names:  Exact SCADA tag names to fetch, e.g. from a prior
+                        gms_list_points call. Required.
         """
-        if not building or not device_id or not start_time or not end_time:
-            raise ToolError("請提供 building、device_id、start_time、end_time。")
+        if not building or not start_time or not end_time or not tag_names:
+            raise ToolError("請提供 building、start_time、end_time、tag_names（請先呼叫 gms_list_points 取得確切的 tag_name）。")
         start_dt = _parse_dt(start_time, "start_time")
         end_dt = _parse_dt(end_time, "end_time")
         if start_dt > end_dt:
@@ -386,15 +386,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             start_dt = end_dt - _MAX_HISTORY
             adjusted = True
 
-        points = _fetch_points(
-            cfg, building, device_id, category, equipment_type,
-            "" if tag_names else keyword, require_scada=True,
-        )
-        if tag_names:
-            wanted = set(tag_names)
-            points = [p for p in points if p["tag_name"] in wanted]
+        points = _fetch_points_by_tags(cfg, building, tag_names)
         if not points:
-            raise ToolError("查無有 SCADA 訊號的點位，無法查詢歷史數據。")
+            raise ToolError("查無對應的點位中繼資料，請確認 tag_names 是否正確。")
 
         by_tag = {p["tag_name"]: p for p in points}
         groups = _group_tags_by_table(building, list(by_tag))
