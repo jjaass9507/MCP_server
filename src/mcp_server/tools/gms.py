@@ -89,6 +89,7 @@ def _fetch_points(
     cfg: "_CfgModule",
     building: str,
     device_id: str,
+    category: str = "",
     equipment_type: str = "",
     keyword: str = "",
     require_scada: bool = False,
@@ -96,20 +97,26 @@ def _fetch_points(
     """Query v_point_detail for a building+device_id.
 
     building+device_id alone is not guaranteed unique (e.g. two 'A1' units,
-    one an air compressor and one a dryer), so equipment_type joins against
-    v_equipment_list to disambiguate when provided.
+    one an air compressor and one a dryer), so category (broad class, e.g.
+    空壓機/乾燥機/真空機) and/or equipment_type (specific type, e.g.
+    離心機/變頻螺旋機) join against v_equipment_list to disambiguate when
+    provided. Either, both, or neither may be given.
     """
     dsn = cfg.resolve_db(CATALOG_DB)
     where = ["p.building = %(building)s", "p.device_id = %(device_id)s"]
     params: dict[str, Any] = {"building": building, "device_id": device_id}
     join = ""
-    if equipment_type:
+    if category or equipment_type:
         join = (
             'JOIN "GMS_agent".v_equipment_list e '
             "ON e.building = p.building AND e.device_id = p.device_id"
         )
-        where.append("e.equipment_type = %(equipment_type)s")
-        params["equipment_type"] = equipment_type
+        if category:
+            where.append("e.category = %(category)s")
+            params["category"] = category
+        if equipment_type:
+            where.append("e.equipment_type = %(equipment_type)s")
+            params["equipment_type"] = equipment_type
     if keyword:
         where.append("p.point_name LIKE %(keyword)s")
         params["keyword"] = f"%{keyword}%"
@@ -180,16 +187,19 @@ def _group_tags_by_table(building: str, tags: list[str]) -> dict[str, list[str]]
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
-    def gms_list_equipment(building: str = "", category: str = "", floor: str = "") -> str:
+    def gms_list_equipment(
+        building: str = "", category: str = "", equipment_type: str = "", floor: str = ""
+    ) -> str:
         """List compressed-air equipment from the PostgreSQL equipment master (Mode A).
 
-        building, category and floor are all optional exact-match filters;
-        omit all to list every active piece of equipment.
+        building, category, equipment_type and floor are all optional
+        exact-match filters; omit all to list every active piece of equipment.
 
         Args:
-            building: Building code, e.g. 'K18'. Optional.
-            category: Equipment category, e.g. '空壓機'/'乾燥機'/'真空機'. Optional.
-            floor:    Floor, e.g. '2F'. Optional.
+            building:       Building code, e.g. 'K18'. Optional.
+            category:       Broad equipment category, e.g. '空壓機'/'乾燥機'/'真空機'. Optional.
+            equipment_type: Specific equipment type, e.g. '離心機'/'變頻螺旋機'. Optional.
+            floor:          Floor, e.g. '2F'. Optional.
         """
         dsn = cfg.resolve_db(CATALOG_DB)
         where = ["is_active = TRUE"]
@@ -200,6 +210,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         if category:
             where.append("category = %(category)s")
             params["category"] = category
+        if equipment_type:
+            where.append("equipment_type = %(equipment_type)s")
+            params["equipment_type"] = equipment_type
         if floor:
             where.append("floor = %(floor)s")
             params["floor"] = floor
@@ -214,28 +227,36 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
     def gms_list_points(
-        building: str = "", device_id: str = "", equipment_type: str = "", keyword: str = ""
+        building: str = "",
+        device_id: str = "",
+        category: str = "",
+        equipment_type: str = "",
+        keyword: str = "",
     ) -> str:
         """List monitoring points and SCADA tags for one piece of equipment (Mode B).
 
         building+device_id is not guaranteed unique (e.g. two 'A1' units, one an
-        air compressor and one a dryer) — pass equipment_type to disambiguate.
+        air compressor and one a dryer) — pass category and/or equipment_type
+        to disambiguate.
 
         Args:
             building:       Building code, e.g. 'K18'. Required.
             device_id:      Equipment number, e.g. 'B4'. Required.
-            equipment_type: Equipment type to disambiguate duplicate device_ids. Optional.
+            category:       Broad equipment category, e.g. '空壓機'/'乾燥機'/'真空機'. Optional.
+            equipment_type: Specific equipment type, e.g. '離心機'/'變頻螺旋機'. Optional.
             keyword:        Substring filter on point_name (LIKE). Optional.
         """
         if not building or not device_id:
             raise ToolError("請提供 building 與 device_id。")
-        rows = _fetch_points(cfg, building, device_id, equipment_type, keyword)
+        rows = _fetch_points(cfg, building, device_id, category, equipment_type, keyword)
         if not rows:
             msg = f"查無點位：building='{building}' device_id='{device_id}'"
+            if category:
+                msg += f" category='{category}'"
             if equipment_type:
                 msg += f" equipment_type='{equipment_type}'"
-            else:
-                msg += "。同編號可能對應多種設備，可提供 equipment_type 以精確鎖定"
+            if not category and not equipment_type:
+                msg += "。同編號可能對應多種設備，可提供 category 或 equipment_type 以精確鎖定"
             raise ToolError(msg + "。")
         return json.dumps(rows, ensure_ascii=False, default=str)
 
@@ -266,6 +287,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
     def gms_realtime_values(
         building: str = "",
         device_id: str = "",
+        category: str = "",
         equipment_type: str = "",
         keyword: str = "",
         tag_names: list[str] = [],
@@ -279,7 +301,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         Args:
             building:       Building code, e.g. 'K18'. Required.
             device_id:      Equipment number, e.g. 'B4'. Required.
-            equipment_type: Equipment type to disambiguate duplicate device_ids. Optional.
+            category:       Broad equipment category, e.g. '空壓機'/'乾燥機'/'真空機'. Optional.
+            equipment_type: Specific equipment type to disambiguate duplicate device_ids. Optional.
             keyword:        Substring filter on point_name (LIKE). Optional, ignored if tag_names is set.
             tag_names:      Exact SCADA tag names to fetch, bypassing the fuzzy keyword match.
                              Use this when tag_name is already known from a prior
@@ -288,7 +311,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         if not building or not device_id:
             raise ToolError("請提供 building 與 device_id。")
         points = _fetch_points(
-            cfg, building, device_id, equipment_type,
+            cfg, building, device_id, category, equipment_type,
             "" if tag_names else keyword, require_scada=True,
         )
         if tag_names:
@@ -328,6 +351,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         device_id: str = "",
         start_time: str = "",
         end_time: str = "",
+        category: str = "",
         equipment_type: str = "",
         keyword: str = "",
         tag_names: list[str] = [],
@@ -343,7 +367,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             device_id:      Equipment number, e.g. 'B4'. Required.
             start_time:     Range start, 'YYYY-MM-DD HH:MM:SS'. Required.
             end_time:       Range end, 'YYYY-MM-DD HH:MM:SS'. Required.
-            equipment_type: Equipment type to disambiguate duplicate device_ids. Optional.
+            category:       Broad equipment category, e.g. '空壓機'/'乾燥機'/'真空機'. Optional.
+            equipment_type: Specific equipment type to disambiguate duplicate device_ids. Optional.
             keyword:        Substring filter on point_name (LIKE). Optional, ignored if tag_names is set.
             tag_names:      Exact SCADA tag names to fetch, bypassing the fuzzy keyword match.
                              Use this when tag_name is already known from a prior
@@ -362,7 +387,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             adjusted = True
 
         points = _fetch_points(
-            cfg, building, device_id, equipment_type,
+            cfg, building, device_id, category, equipment_type,
             "" if tag_names else keyword, require_scada=True,
         )
         if tag_names:
