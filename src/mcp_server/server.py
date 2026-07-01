@@ -4,7 +4,7 @@ import sys
 from mcp.server.fastmcp import FastMCP
 
 import mcp_server.config as cfg
-from mcp_server.tools import api, custom, database, filesystem, presentation
+from mcp_server.tools import api, custom, database, filesystem, gms, presentation
 from mcp_server.utils.logging import setup_logging
 
 logger = setup_logging()
@@ -15,8 +15,13 @@ def create_server() -> FastMCP:
         name="MCP Server",
         host="0.0.0.0",
         instructions=(
-            "A modular MCP server providing filesystem, database, custom, API, and presentation tools. "
+            "A modular MCP server providing filesystem, database, custom, API, presentation, and "
+            "GMS compressed-air query tools. "
             "Filesystem and database access is restricted to paths configured in config.toml. "
+            "For compressed-air equipment/point/tag/value queries, prefer the gms_* tools "
+            "(gms_list_equipment, gms_list_points, gms_list_pipe_points, gms_realtime_values, "
+            "gms_history_values) over hand-written SQL — they encode the fixed PostgreSQL/Oracle "
+            "join, zone, and batching logic. Fall back to db_query for ad-hoc or exploratory queries. "
             "Call db_list_databases() to see available databases before querying. "
             "Call api_list_services() to see available external APIs before calling api_request(). "
             "Use push_notify() to send a Push+ notification to email or a group; always format its "
@@ -29,6 +34,7 @@ def create_server() -> FastMCP:
     custom.register(mcp)
     api.register(mcp, cfg)
     presentation.register(mcp, cfg)
+    gms.register(mcp, cfg)
     return mcp
 
 

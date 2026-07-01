@@ -130,6 +130,24 @@ Tools use a `db_name` alias from `config.toml` instead of a raw file path. Call 
 | `db_table_schema(db_name, table_name)` | Get column definitions |
 | `db_execute_script(db_name, script)` | Run a multi-statement SQL script |
 
+### GMS (compressed-air point/tag/value queries)
+
+Domain-specific tools that encode the fixed query logic for compressed-air
+equipment: PostgreSQL schema prefixes, Oracle zone/system table naming
+(`FACCIMTAB.ZONE{1|2}_{building}_{GMS|PMS}`), >10-tag batching, and a 3-hour
+history cap. They read from the same connections as `db_query` (catalog:
+`postgreSQL_CIM`, realtime: `oracle`, configured under
+`[database.connections]`) — prefer these over hand-written SQL for
+compressed-air queries; fall back to `db_query` for anything ad-hoc.
+
+| Tool | Description |
+|------|-------------|
+| `gms_list_equipment(building, category, floor)` | List equipment from the PostgreSQL master (all filters optional) |
+| `gms_list_points(building, device_id, equipment_type, keyword)` | List monitoring points/tags for one device; `equipment_type` disambiguates duplicate `device_id`s |
+| `gms_list_pipe_points(building, system_name)` | List pipe-network points (HCDA/LCDA/HVAC) |
+| `gms_realtime_values(building, device_id, equipment_type, keyword)` | Latest SCADA value per point, merged from PostgreSQL tags + Oracle values |
+| `gms_history_values(building, device_id, start_time, end_time, equipment_type, keyword)` | Historical value series per point, clamped to a 3-hour window, with per-tag max/min/latest summary |
+
 ### API (external HTTP)
 
 Services are configured under `[api.services]` in `config.toml`. Tools use a

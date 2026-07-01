@@ -145,6 +145,25 @@ def _get_conn(dsn: str, cfg: "_CfgModule"):
             yield conn
 
 
+def run_select(dsn: str, cfg: "_CfgModule", sql: str, params: Any = None) -> list[dict]:
+    """Execute a SELECT and return rows as a list of dicts.
+
+    params may be a positional sequence or a dict of named parameters
+    (%(name)s for PostgreSQL/SQL Server, :name for Oracle, either for SQLite).
+    """
+    with _get_conn(dsn, cfg) as cur:
+        if cfg.is_postgres(dsn) or cfg.is_mssql(dsn):
+            cur.execute(sql, params if params else None)
+            return list(cur.fetchall())
+        elif cfg.is_oracle(dsn):
+            cur.execute(sql, params if params else [])
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+        else:
+            cursor = cur.execute(sql, params if params else [])
+            return [dict(row) for row in cursor.fetchall()]
+
+
 # ── tool registration ─────────────────────────────────────────────────────────
 
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
@@ -189,17 +208,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         if not sql.strip().upper().startswith("SELECT"):
             raise ToolError("db_query only accepts SELECT statements. Use db_execute for INSERT/UPDATE/DELETE.")
         dsn = cfg.resolve_db(_resolve_db_name(db_name))
-        with _get_conn(dsn, cfg) as cur:
-            if cfg.is_postgres(dsn) or cfg.is_mssql(dsn):
-                cur.execute(sql, params or None)
-                rows = cur.fetchall()
-            elif cfg.is_oracle(dsn):
-                cur.execute(sql, params or [])
-                cols = [d[0] for d in cur.description]
-                rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-            else:
-                cursor = cur.execute(sql, params)
-                rows = [dict(row) for row in cursor.fetchall()]
+        rows = run_select(dsn, cfg, sql, params)
         return json.dumps(rows, ensure_ascii=False, default=str)
 
     @mcp.tool()
