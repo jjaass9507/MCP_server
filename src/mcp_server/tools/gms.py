@@ -258,7 +258,11 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
     def gms_realtime_values(
-        building: str = "", device_id: str = "", equipment_type: str = "", keyword: str = ""
+        building: str = "",
+        device_id: str = "",
+        equipment_type: str = "",
+        keyword: str = "",
+        tag_names: list[str] = [],
     ) -> str:
         """Get the latest SCADA value for each monitored point of a piece of equipment (Mode D).
 
@@ -270,11 +274,20 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             building:       Building code, e.g. 'K18'. Required.
             device_id:      Equipment number, e.g. 'B4'. Required.
             equipment_type: Equipment type to disambiguate duplicate device_ids. Optional.
-            keyword:        Substring filter on point_name (LIKE). Optional.
+            keyword:        Substring filter on point_name (LIKE). Optional, ignored if tag_names is set.
+            tag_names:      Exact SCADA tag names to fetch, bypassing the fuzzy keyword match.
+                             Use this when tag_name is already known from a prior
+                             gms_list_points call — do not paraphrase point_name into keyword. Optional.
         """
         if not building or not device_id:
             raise ToolError("請提供 building 與 device_id。")
-        points = _fetch_points(cfg, building, device_id, equipment_type, keyword, require_scada=True)
+        points = _fetch_points(
+            cfg, building, device_id, equipment_type,
+            "" if tag_names else keyword, require_scada=True,
+        )
+        if tag_names:
+            wanted = set(tag_names)
+            points = [p for p in points if p["tag_name"] in wanted]
         if not points:
             raise ToolError("查無有 SCADA 訊號的點位，無法查詢即時值。")
 
@@ -311,6 +324,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         end_time: str = "",
         equipment_type: str = "",
         keyword: str = "",
+        tag_names: list[str] = [],
     ) -> str:
         """Get a historical value series for each monitored point (Mode E).
 
@@ -324,7 +338,10 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             start_time:     Range start, 'YYYY-MM-DD HH:MM:SS'. Required.
             end_time:       Range end, 'YYYY-MM-DD HH:MM:SS'. Required.
             equipment_type: Equipment type to disambiguate duplicate device_ids. Optional.
-            keyword:        Substring filter on point_name (LIKE). Optional.
+            keyword:        Substring filter on point_name (LIKE). Optional, ignored if tag_names is set.
+            tag_names:      Exact SCADA tag names to fetch, bypassing the fuzzy keyword match.
+                             Use this when tag_name is already known from a prior
+                             gms_list_points call — do not paraphrase point_name into keyword. Optional.
         """
         if not building or not device_id or not start_time or not end_time:
             raise ToolError("請提供 building、device_id、start_time、end_time。")
@@ -338,7 +355,13 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             start_dt = end_dt - _MAX_HISTORY
             adjusted = True
 
-        points = _fetch_points(cfg, building, device_id, equipment_type, keyword, require_scada=True)
+        points = _fetch_points(
+            cfg, building, device_id, equipment_type,
+            "" if tag_names else keyword, require_scada=True,
+        )
+        if tag_names:
+            wanted = set(tag_names)
+            points = [p for p in points if p["tag_name"] in wanted]
         if not points:
             raise ToolError("查無有 SCADA 訊號的點位，無法查詢歷史數據。")
 
