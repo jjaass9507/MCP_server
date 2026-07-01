@@ -145,8 +145,14 @@ def _oracle_latest(cfg: "_CfgModule", oracle_dsn: str, table: str, tags: list[st
 
 
 def _oracle_history(
-    cfg: "_CfgModule", oracle_dsn: str, table: str, tags: list[str], start: str, end: str
+    cfg: "_CfgModule", oracle_dsn: str, table: str, tags: list[str],
+    start: datetime, end: datetime,
 ) -> list[dict]:
+    """start/end are bound as native datetime objects (DB_TYPE_TIMESTAMP), not
+    strings — binding strings forces Oracle to implicitly parse them via
+    NLS_DATE_FORMAT, which raises ORA-01843 whenever that session setting
+    doesn't match our 'YYYY-MM-DD HH:MM:SS' format.
+    """
     clause, params = _in_clause("t", tags)
     params["start_time"] = start
     params["end_time"] = end
@@ -373,8 +379,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         for table, tags in groups.items():
             for batch in _chunk(tags):
                 for row in _oracle_history(
-                    cfg, oracle_dsn, table, batch,
-                    start_dt.strftime(_DT_FMT), end_dt.strftime(_DT_FMT),
+                    cfg, oracle_dsn, table, batch, start_dt, end_dt,
                 ):
                     series[row["TAGNAME"]].append({"value": row["VALUE"], "datetime": row["DATETIME"]})
 
