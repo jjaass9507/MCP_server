@@ -151,15 +151,22 @@ def _fetch_points_by_tags(cfg: "_CfgModule", building: str, tag_names: list[str]
 # ── Oracle: realtime / history value lookup ─────────────────────────────────
 
 def _oracle_latest(cfg: "_CfgModule", oracle_dsn: str, table: str, tags: list[str]) -> list[dict]:
+    """Fetch the latest row per tag.
+
+    Uses a per-tag ROW_NUMBER() rather than a single global MAX(DATETIME):
+    tags in the same batch can update at different frequencies, so a slower
+    tag may have no row at the batch's global-max timestamp and would
+    otherwise come back null even though it has an older latest value.
+    """
     clause, params = _in_clause("t", tags)
     sql = f"""
-        SELECT TAGNAME, VALUE, DATETIME
-        FROM {table}
-        WHERE TAGNAME IN ({clause})
-        AND DATETIME = (
-            SELECT MAX(DATETIME) FROM {table}
+        SELECT TAGNAME, VALUE, DATETIME FROM (
+            SELECT TAGNAME, VALUE, DATETIME,
+                   ROW_NUMBER() OVER (PARTITION BY TAGNAME ORDER BY DATETIME DESC) rn
+            FROM {table}
             WHERE TAGNAME IN ({clause})
         )
+        WHERE rn = 1
         ORDER BY TAGNAME
     """
     return database.run_select(oracle_dsn, cfg, sql, params)
