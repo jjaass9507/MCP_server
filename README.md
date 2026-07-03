@@ -134,7 +134,7 @@ Tools use a `db_name` alias from `config.toml` instead of a raw file path. Call 
 
 Domain-specific tools that encode the fixed query logic for compressed-air
 equipment: PostgreSQL schema prefixes, Oracle zone/system table naming
-(`FACCIMTAB.ZONE{1|2}_{building}_{GMS|PMS}`), >10-tag batching, and a 3-hour
+(`FACCIMTAB.ZONE{1|2}_{building}_{GMS|PMS}`), >10-tag batching, and a 1-day
 history cap. They read from the same connections as `db_query` (catalog:
 `postgreSQL_CIM`, realtime: `oracle`, configured under
 `[database.connections]`) — prefer these over hand-written SQL for
@@ -146,7 +146,7 @@ compressed-air queries; fall back to `db_query` for anything ad-hoc.
 | `gms_list_points(building, device_id, category, equipment_type, keyword)` | List monitoring points/tags for one device; `category` (broad, e.g. 空壓機/乾燥機/真空機) and/or `equipment_type` (specific, e.g. 離心機/變頻螺旋機) disambiguate duplicate `device_id`s |
 | `gms_list_pipe_points(building, system_name)` | List pipe-network points (HCDA/LCDA/HVAC) |
 | `gms_realtime_values(building, tag_names)` | Latest SCADA value for a list of already-known tags. Pure Oracle value lookup — resolve `tag_names` via `gms_list_points` first, it does not search by device_id/category/keyword |
-| `gms_history_values(building, start_time, end_time, tag_names)` | Historical value series for a list of already-known tags, clamped to a 3-hour window, with per-tag max/min/latest summary. Same tag_names-only contract as `gms_realtime_values` |
+| `gms_history_values(building, start_time, end_time, tag_names)` | Historical value series for a list of already-known tags, clamped to a 1-day window, with per-tag max/min/latest summary. Same tag_names-only contract as `gms_realtime_values` |
 
 ### API (external HTTP)
 

@@ -1,7 +1,7 @@
 """GMS 空壓系統點位查詢工具 (Mode A~E).
 
 把「空壓系統點位查詢助理」prompt 中固定的領域邏輯（schema 前綴、Oracle
-Zone 判斷、GMS/PMS 系統分類、Tag 分批、3 小時歷史上限、跨庫合併）收斂為
+Zone 判斷、GMS/PMS 系統分類、Tag 分批、1 天歷史上限、跨庫合併）收斂為
 少數參數化、唯讀工具，取代 agent 每次自行拼接 SQL 的作法。
 
 - 點位主檔在 PostgreSQL（連線名 CATALOG_DB），即時/歷史數值在 Oracle
@@ -29,7 +29,7 @@ logger = get_logger("gms")
 CATALOG_DB = "postgreSQL_CIM"
 REALTIME_DB = "oracle"
 
-_MAX_HISTORY = timedelta(hours=3)
+_MAX_HISTORY = timedelta(days=1)
 _DT_FMT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -358,8 +358,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         it does not search by device_id/category/equipment_type/keyword. Call
         gms_list_points first to resolve the tag_name(s) you need.
 
-        History queries are capped at 3 hours; a longer range is silently
-        clamped to the most recent 3 hours of the requested end_time and the
+        History queries are capped at 1 day; a longer range is silently
+        clamped to the most recent 1 day of the requested end_time and the
         result reports adjusted=true.
 
         Args:
