@@ -329,6 +329,20 @@ MCP_server/
 ├── deploy/
 │   ├── mcp-server.service      # systemd service unit
 │   └── install-systemd.sh      # one-shot Linux install script
+├── scripts/
+│   ├── generate_pptx.js        # pptxgenjs renderer invoked by presentation.py
+│   ├── setup_presentation.ps1  # one-time pptxgenjs/node_modules install
+│   ├── download_pptxgenjs.py
+│   ├── download_lucide_icons.py
+│   ├── icons/                  # bundled Lucide SVG icon set
+│   ├── pack_offline.ps1        # build the offline install bundle
+│   └── install_offline.ps1     # install the offline bundle on the target machine
+├── .claude/
+│   └── commands/
+│       └── create-presentation.md  # guided presentation-creation skill
+├── docs/
+│   └── HANDOFF.md              # maintainer handoff document
+├── tests/                      # pure-logic unit tests (pytest)
 ├── src/
 │   └── mcp_server/
 │       ├── config.py           # Access control, config loader & startup validation
@@ -336,7 +350,9 @@ MCP_server/
 │       ├── tools/
 │       │   ├── filesystem.py
 │       │   ├── database.py
+│       │   ├── gms.py          # compressed-air point/tag/value queries
 │       │   ├── api.py
+│       │   ├── presentation.py # pptx generation via pptxgenjs
 │       │   └── custom.py
 │       └── utils/
 │           ├── errors.py

@@ -216,12 +216,13 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         """Execute an INSERT, UPDATE, or DELETE statement against a named database.
 
         Returns {"rows_affected": int, "last_insert_id": int}.
-        Supports both SQLite and PostgreSQL connections.
+        Supports SQLite, PostgreSQL, and SQL Server connections. Oracle
+        connections are read-only in this server and are rejected.
 
         Args:
             db_name: Database name from config.toml. Use db_list_databases() to see options.
             sql:     An INSERT, UPDATE, or DELETE SQL statement.
-            params:  Optional positional parameters (%s for PostgreSQL, ? for SQLite).
+            params:  Optional positional parameters (%s for PostgreSQL/SQL Server, ? for SQLite).
         """
         first_word = sql.strip().upper().split()[0] if sql.strip() else ""
         if first_word == "SELECT":
@@ -250,7 +251,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
     def db_list_schemas(db_name: str = "") -> str:
-        """List all user-defined schemas in a PostgreSQL database.
+        """List all user-defined schemas in a PostgreSQL, SQL Server, or Oracle database.
 
         Call this to discover available schemas before using db_list_tables.
         For SQLite, always returns 'main' (SQLite has no schemas).
@@ -477,7 +478,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         """Execute a multi-statement SQL script against a named database.
 
         For SQLite, statements are separated by semicolons.
-        For PostgreSQL, the entire script is sent as-is.
+        For PostgreSQL and SQL Server, the entire script is sent as-is.
+        Oracle connections are read-only in this server and are rejected.
 
         Args:
             db_name: Database name from config.toml. Use db_list_databases() to see options.
