@@ -205,7 +205,11 @@ def validate_config() -> list[str]:
         )
 
     # Filesystem: every configured allowed_path must exist and be a directory.
+    # (_export_dir is also appended to _allowed_paths for check_path() access,
+    # but it's validated separately below with a clearer message, so skip it here.)
     for p in _allowed_paths:
+        if p == _export_dir:
+            continue
         if not p.exists():
             errors.append(f"filesystem.allowed_paths entry does not exist: {p}")
         elif not p.is_dir():
