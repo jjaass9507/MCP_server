@@ -134,18 +134,12 @@ Log 一律走 **stderr**（stdout 保留給 stdio transport 的 JSON-RPC）。
    bind 字串會走 NLS_DATE_FORMAT 隱式轉換，session 設定不同就炸
    ORA-01843（commit ec7e3f7）。
 
-### 已知未修的正確性問題（接手後的第一優先）
+### 已修正的正確性問題（待廠內實測）
 
-`_oracle_latest()` 取「最新值」的 SQL 是：
-
-```sql
-WHERE TAGNAME IN (...)
-AND DATETIME = (SELECT MAX(DATETIME) FROM ... WHERE TAGNAME IN (...))
-```
-
-這是**整批 tag 共用一個全域 MAX(DATETIME)**。如果批次裡某個 tag 更新
-頻率較慢、在那個精確時間點沒有樣本，它就查不到列，結果回 `value: null`
-——明明有較舊的最新值卻拿不到。應改成 per-tag latest，例如：
+`_oracle_latest()` 原本的 SQL 用**整批 tag 共用的全域 MAX(DATETIME)**
+——批次裡更新頻率較慢的 tag 在該精確時間點沒有樣本就回 `value: null`，
+明明有較舊的最新值卻拿不到。已於 2026-07-03（commit `32173a1`）改為
+per-tag latest：
 
 ```sql
 SELECT TAGNAME, VALUE, DATETIME FROM (
@@ -155,7 +149,9 @@ SELECT TAGNAME, VALUE, DATETIME FROM (
 ) WHERE rn = 1
 ```
 
-改動後需使用者在廠內對照 SCADA 畫面實測（見 §6 驗證限制）。
+⚠️ **尚未在真實 Oracle 上驗證**：請使用者在廠內用一批「高頻 + 低頻混合」
+的 tag 清單跑 `gms_realtime_values`，確認低頻 tag 不再回 null、值與
+SCADA 畫面一致（見 §6 驗證限制）。
 
 ---
 
@@ -212,20 +208,20 @@ SELECT TAGNAME, VALUE, DATETIME FROM (
 
 ### ⚠️ GMS 工具還沒合併回 main
 
-分支 `claude/project-handoff-docs-nexorj` 比 `origin/main` 多 **7 個
-commit（a3a3977..217ab08）**，內容就是整套 GMS 工具（`gms.py` 427 行、
-`database.run_select` 抽出、server/README 對應修改）。**離線部署是從
-main 打包的，所以正式廠務機上目前沒有 GMS 功能。**
+分支 `claude/project-handoff-docs-nexorj` 比 `origin/main` 多 **11 個
+commit**：7 個 GMS 工具功能（a3a3977..217ab08，`gms.py` 427 行、
+`database.run_select` 抽出）＋ 本交接文件 ＋ `_oracle_latest` 修正 ＋
+測試套件 ＋ README/docstring 更新。**離線部署是從 main 打包的，所以
+正式廠務機上目前沒有 GMS 功能。**
 
-接手後的第一件事（經使用者確認後）：把這 7 個 commit 合併回 `main`，
+接手後的第一件事（經使用者確認後）：把這些 commit 合併回 `main`，
 然後在廠內走一次 §1 的部署更新流程。
 
 ### 其他現狀
 
-- **沒有任何測試**：`pyproject.toml` 配好了 pytest（`testpaths=["tests"]`），
-  但 `tests/` 目錄不存在。也沒有 CI。
-- README 的 Project Structure 段落已過時（缺 `gms.py`、`presentation.py`、
-  `scripts/`、`.claude/`；工具清單倒是最新的）。
+- 測試：2026-07-03 起有 39 個純邏輯測試（`tests/`，不需真實 DB，
+  `pytest` 即可跑）。仍**無 CI、無 DB 整合測試**，config.py 也尚未
+  納入測試（見 §7 第 2、7 項）。
 - `config.toml` 不進版控（gitignored），正式機上的實際設定只存在於
   廠內機器，內含 DSN 與 Push+ token。
 
@@ -261,25 +257,22 @@ main 打包的，所以正式廠務機上目前沒有 GMS 功能。**
 
 ## 7. 優化方向 roadmap（按優先序）
 
-1. **【bug】修 `gms.py` `_oracle_latest` 的全域 MAX(DATETIME) 問題**
-   （詳見 §3 末段，含建議 SQL）。改完請使用者廠內實測：挑一批含
-   高頻+低頻 tag 的清單，確認低頻 tag 不再回 null。
+> **2026-07-03 新增最高優先需求**：大量查詢結果的檔案快取
+> （file-based handoff），完整需求、可行性評估與建議設計見 **§8**。
+> 完成 §8 後再繼續下面未完成的 4–7 項。
 
-2. **【品質】建立最小測試套件**。不碰真 DB 也能測的純邏輯：
-   - `gms.py`：`_zone`（K1x/K2x/其他）、`_system_from_tag`、
-     `_oracle_table`、`_chunk`、`_in_clause`、`_parse_dt`、
-     history clamp 邏輯。
-   - `presentation.py`：`_build_outline`（裁剪/擴充/priority 保留）、
-     `_audit_slides`、`_word_count`（CJK）。
-   - `database.py`：`_parse_mssql_dsn`、`_parse_oracle_dsn`。
-   - `config.py`：`check_path`（白名單、write 開關）、`validate_config`
-     （JDBC 擋下、缺 base_url）。注意 config 在 import 時載入，測試需
-     用 `MCP_CONFIG` 指向 fixture 或重構載入時機（見第 7 項）。
-   - DB 整合測試可用 SQLite 走 `run_select` / `db_execute` 全流程。
+1. ✅ **已完成（2026-07-03，commit `32173a1`）**：`_oracle_latest` 改為
+   per-tag latest（見 §3）。仍待使用者廠內實測：挑一批含高頻+低頻 tag
+   的清單，確認低頻 tag 不再回 null。
 
-3. **【文件】更新 README**：Project Structure 段補上 `gms.py`、
-   `presentation.py`、`scripts/`、`.claude/`、`docs/`；`db_execute`
-   docstring 仍寫「SQLite and PostgreSQL」，實際支援 MSSQL、拒絕 Oracle。
+2. ✅ **大致完成（2026-07-03，commit `b765b82`）**：`tests/` 下 39 個
+   純邏輯測試（gms / presentation / database DSN 解析），`pytest` 全綠。
+   尚未涵蓋：`config.py` 的 `check_path`/`validate_config`（config 在
+   import 時載入，需用 `MCP_CONFIG` 指向 fixture 或先重構載入時機，見
+   第 7 項）、用 SQLite 跑 `run_select`/`db_execute` 的整合測試、CI。
+
+3. ✅ **已完成（2026-07-03，commit `a29ba14`）**：README Project
+   Structure 與 `database.py` 過時 docstring 均已更新。
 
 4. **【效能】連線池/快取**：目前每次工具呼叫都新建 DB 連線，Oracle
    建線特別慢，GMS 一次查詢又會多批次呼叫。可在 `database.py` 加簡單的
@@ -307,7 +300,89 @@ main 打包的，所以正式廠務機上目前沒有 GMS 功能。**
 
 ---
 
-## 8. 快速索引
+## 8. 待實作需求：大量查詢結果的檔案快取（file-based handoff）
+
+> 使用者 2026-07-03 提出，目前 roadmap 最高優先。實作前先跟使用者
+> 確認 §8.3 的設計取捨（尤其 export 目錄的實際 Windows 路徑）。
+
+### 8.1 問題
+
+`gms_history_values`（1 天 × N tags 的 series）和大範圍的 `db_query`
+會把整包資料轉成 JSON 塞回 LLM context——token 成本高、可能直接超過
+上限，而且 agent 後續要拿資料畫圖/分析時，資料進 context 根本沒有用處。
+
+### 8.2 使用者提出的做法 A（文件快取法）與可行性評估
+
+做法 A：查詢工具不回傳資料本體，改把結果存成暫存檔（如 CSV），只回傳
+「檔案路徑 + schema」給 LLM；後續由 Python 工具直接讀檔處理（例如畫
+關聯矩陣）。
+
+**評估結論：可行性高，建議採用**，理由：
+
+- 與現有架構天然契合：`push_notify` 已有「檔案留在 server、context 只
+  走路徑」的成功先例（`image_path` 由 server 讀檔轉 base64，見 §4）；
+  輸出目錄可直接用 `allowed_paths` / `check_path` 機制管制。
+- 資料從頭到尾不進 context，token 成本從 O(資料量) 降為 O(1)。
+
+**但有一個前提缺口**：本 server **沒有**通用 Python 執行工具，做法 A
+第三步「LLM 呼叫 Python 工具讀檔畫圖」目前不存在。處理方式見 8.3 第
+4、5 點——**不要**為此加任意程式碼執行工具。
+
+**Token 安全關鍵**：工具回傳只能含「路徑 + 欄位 + 筆數 + 前幾筆
+preview +（GMS）per-tag summary」；且 docstring 必須明確警告 agent
+**不要用 `read_file` 把整個 CSV 讀回 context**（否則前功盡棄）。
+
+### 8.3 建議設計（新增工具為主、小幅修改為輔）
+
+1. **新 config 區塊 `[export]`**：`dir = "D:/.../mcp_exports"`（實際
+   路徑請使用者提供）。啟動驗證目錄存在，且必須位於 `allowed_paths`
+   內（或自動納入）。檔名帶 timestamp（如
+   `query_20260703_153000.csv`）；每次寫入前清理超過 N 天的舊檔
+   （建議 7 天，避免離線機磁碟被暫存檔塞滿）。CSV 編碼用
+   **utf-8-sig**（Windows Excel 直開中文不亂碼）。
+
+2. **新增 `db_query_to_file(db_name, sql, params, filename="")`**
+   （`database.py`）：執行 SELECT、寫 CSV，回傳
+   `{path, columns, row_count, preview(前 5 筆), size_kb}`。
+   **不改 `db_query`**——小結果直接回傳仍是最方便的路徑，docstring
+   互相指引（「結果可能上千列時改用 db_query_to_file」）。
+
+3. **`gms_history_values` 加選用參數 `to_file: bool = False`**：
+   預設行為 100% 不變（向後相容，不破壞既有工具契約，見 §3）。
+   `to_file=true` 時把 series 寫成 CSV（欄位：`tag_name, point_name,
+   phase, unit, datetime, value`），回傳保留 `adjusted` /
+   `start_time` / `end_time` / 每 tag 的 `summary`（max/min/latest），
+   把 `series` 換成檔案資訊。summary 本來就小又有價值，一定要留。
+   （若想完全不碰既有函式，替代方案是另開 `gms_history_to_file`
+   工具；二選一即可，建議前者——少一個工具、參數預設值保證相容。）
+
+4. **第二階段（獨立 commit）：固定功能繪圖工具**，補上做法 A 的
+   「Python 工具」缺口。例如
+   `plot_csv(csv_path, chart_type, x, y_columns, output_png)`，用
+   matplotlib 畫折線/散佈/相關矩陣，輸出 PNG 路徑。PNG 可直接餵
+   `push_notify(image_path=...)`，完成「查詢 → 存檔 → 畫圖 → 推播」
+   全程資料不進 context 的閉環。
+   ⚠️ matplotlib 是新依賴：改 `pyproject.toml` 後，廠內部署需重跑
+   `pack_offline.ps1` / `install_offline.ps1`（見 §1）。中文圖表
+   需指定字型（Microsoft JhengHei），離線機上要驗證。
+
+5. **明確不建議**：通用 `exec_python`（任意程式碼執行）工具。廠務機
+   上風險過高，也違反本專案「把固定領域邏輯收斂成參數化工具」的路線
+   （§3 的教訓）。若未來真的需要彈性分析，再評估受限的 pandas 表達式
+   工具，且必須先與使用者確認。
+
+### 8.4 驗收標準
+
+- 查 1 天 × 10 tags 的歷史資料，工具回傳給 agent 的內容 < 1 KB，
+  CSV 檔案內容完整正確。
+- 既有呼叫（不帶 `to_file`）行為完全不變：既有 39 個測試全綠，
+  並為新路徑補測試（CSV 寫出、preview 截斷、舊檔清理）。
+- 廠內實測：CSV 用 Excel 直開中文欄位正常；（第二階段）PNG 圖表
+  中文不變豆腐字、`push_notify` 附圖送達。
+
+---
+
+## 9. 快速索引
 
 | 想知道… | 看這裡 |
 |---------|--------|
