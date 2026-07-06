@@ -240,8 +240,10 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             sql:      A SELECT SQL statement.
             params:   Optional positional parameters, same rules as db_query.
             filename: Optional output filename (a .csv extension is enforced
-                      and unsafe characters are stripped). Defaults to a
-                      timestamped name (e.g. 'query_20260703_153000.csv') if omitted.
+                      and unsafe characters are stripped). A short random
+                      suffix is always appended so repeated calls never
+                      overwrite each other's file. Defaults to a timestamped
+                      name (e.g. 'query_20260703_153000_a3f9c1.csv') if omitted.
         """
         if not sql.strip().upper().startswith("SELECT"):
             raise ToolError("db_query_to_file only accepts SELECT statements. Use db_execute for INSERT/UPDATE/DELETE.")

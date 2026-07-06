@@ -353,8 +353,9 @@ preview +（GMS）per-tag summary」；且 docstring 必須明確警告 agent
 
 1. **新 config 區塊 `[export]`**：`dir = "D:/.../mcp_exports"`（實際
    路徑請使用者提供）。啟動驗證目錄存在，且必須位於 `allowed_paths`
-   內（或自動納入）。檔名帶 timestamp（如
-   `query_20260703_153000.csv`）；每次寫入前清理超過 N 天的舊檔
+   內（或自動納入）。檔名帶 timestamp 與短隨機尾碼（如
+   `query_20260703_153000_a3f9c1.csv`，避免同秒落地或同名 filename
+   互相覆蓋）；每次寫入前清理超過 N 天的舊檔
    （建議 7 天，避免離線機磁碟被暫存檔塞滿）。CSV 編碼用
    **utf-8-sig**（Windows Excel 直開中文不亂碼）。
 

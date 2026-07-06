@@ -7,6 +7,7 @@ Used by database.db_query_to_file and gms.gms_history_values(to_file=True).
 import csv
 import pathlib
 import re
+import secrets
 import time
 from datetime import datetime
 
@@ -14,17 +15,28 @@ _SAFE_CHARS_RE = re.compile(r"[^A-Za-z0-9_\-]")
 _MAX_AGE_DAYS = 7
 
 
+def _random_suffix() -> str:
+    return secrets.token_hex(3)
+
+
 def timestamped_name(ext: str) -> str:
-    """Return a timestamped filename, e.g. 'query_20260703_153000.csv'."""
-    return f"query_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
+    """Return a timestamped filename with a random suffix, e.g.
+    'query_20260703_153000_a3f9c1.csv'.
+
+    The random suffix prevents two queries that land in the same second
+    from getting the same filename and silently overwriting each other.
+    """
+    return f"query_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_random_suffix()}.{ext}"
 
 
 def sanitize_filename(filename: str, ext: str) -> str:
-    """Return a safe '<name>.<ext>' filename derived from a caller-supplied name.
+    """Return a safe '<name>_<random>.<ext>' filename derived from a caller-supplied name.
 
-    Strips any directory components and replaces unsafe characters with '_';
-    falls back to a timestamped name when filename is empty or nothing safe
-    is left after sanitizing.
+    Strips any directory components and replaces unsafe characters with '_',
+    then appends a short random suffix so repeated calls with the same
+    filename never collide and overwrite each other's data. Falls back to a
+    timestamped name when filename is empty or nothing safe is left after
+    sanitizing.
     """
     if not filename:
         return timestamped_name(ext)
@@ -32,7 +44,7 @@ def sanitize_filename(filename: str, ext: str) -> str:
     stem = _SAFE_CHARS_RE.sub("_", stem).strip("_")
     if not stem:
         return timestamped_name(ext)
-    return f"{stem}.{ext}"
+    return f"{stem}_{_random_suffix()}.{ext}"
 
 
 def cleanup_old_exports(export_dir: pathlib.Path, max_age_days: int = _MAX_AGE_DAYS) -> None:

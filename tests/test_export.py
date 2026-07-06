@@ -7,6 +7,7 @@ gms_history_values to_file parameter (Oracle/PostgreSQL calls monkeypatched).
 
 import csv
 import os
+import re
 import sqlite3
 import time
 from datetime import datetime
@@ -26,15 +27,28 @@ def _get_tool(mcp: FastMCP, name: str):
 # ── export_utils.sanitize_filename ──────────────────────────────────────────
 
 def test_sanitize_filename_normal():
-    assert export_utils.sanitize_filename("myquery", "csv") == "myquery.csv"
+    result = export_utils.sanitize_filename("myquery", "csv")
+    assert re.fullmatch(r"myquery_[0-9a-f]{6}\.csv", result)
 
 
 def test_sanitize_filename_strips_extension_and_appends_target():
-    assert export_utils.sanitize_filename("myquery.txt", "csv") == "myquery.csv"
+    result = export_utils.sanitize_filename("myquery.txt", "csv")
+    assert re.fullmatch(r"myquery_[0-9a-f]{6}\.csv", result)
 
 
 def test_sanitize_filename_strips_path_separators():
-    assert export_utils.sanitize_filename("../../etc/passwd", "csv") == "passwd.csv"
+    result = export_utils.sanitize_filename("../../etc/passwd", "csv")
+    assert re.fullmatch(r"passwd_[0-9a-f]{6}\.csv", result)
+
+
+def test_sanitize_filename_same_input_twice_does_not_collide():
+    # Two calls with the same caller-supplied name must not produce the same
+    # filename — otherwise the second write would silently overwrite the
+    # first (and its already-handed-out path/download_url would now point
+    # at the wrong caller's data).
+    first = export_utils.sanitize_filename("report", "csv")
+    second = export_utils.sanitize_filename("report", "csv")
+    assert first != second
 
 
 def test_sanitize_filename_replaces_unsafe_chars():
@@ -149,7 +163,7 @@ def test_db_query_to_file_custom_filename(monkeypatch, tmp_path, sqlite_db):
 
     result = db_query_to_file(db_name="mydb", sql="SELECT id, name FROM t", filename="myreport")
 
-    assert result["path"].endswith("myreport.csv")
+    assert re.search(r"myreport_[0-9a-f]{6}\.csv$", result["path"])
 
 
 def test_db_query_to_file_rejects_non_select(monkeypatch, tmp_path, sqlite_db):
