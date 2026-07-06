@@ -74,6 +74,31 @@ def get_export_dir() -> pathlib.Path:
     return _export_dir
 
 
+# ── Download server (cross-machine CSV handoff) ─────────────────────────────
+
+_export_cfg: dict[str, Any] = _config.get("export", {})
+_serve_downloads: bool = _export_cfg.get("serve_downloads", False)
+_download_host: str = _export_cfg.get("download_host", "0.0.0.0")
+_advertise_host: str = _export_cfg.get("advertise_host", "")
+_download_port: int = _export_cfg.get("download_port", 8081)
+_url_ttl_minutes: int = _export_cfg.get("url_ttl_minutes", 60)
+
+
+def get_download_config() -> dict[str, Any]:
+    """Return the [export] download-server settings.
+
+    Always returns a dict regardless of whether serve_downloads is enabled;
+    validate_config() is what enforces the required fields when it is.
+    """
+    return {
+        "serve_downloads": _serve_downloads,
+        "download_host": _download_host,
+        "advertise_host": _advertise_host,
+        "download_port": _download_port,
+        "url_ttl_minutes": _url_ttl_minutes,
+    }
+
+
 def check_path(p: pathlib.Path, write: bool = False) -> None:
     """Raise ToolError if p is outside every allowed directory, or if write
     is requested but allow_write is False.
@@ -248,6 +273,28 @@ def validate_config() -> list[str]:
             errors.append(
                 f"database.connections['{name}'] points to '{dsn}' "
                 f"but the parent directory '{db_path.parent}' does not exist"
+            )
+
+    # Download server: only validated when export.serve_downloads is enabled.
+    if _serve_downloads:
+        if _export_dir is None:
+            errors.append(
+                "export.serve_downloads is true but export.dir is not set. "
+                'Add [export] dir = "..." (an absolute path) in config.toml.'
+            )
+        if not _advertise_host.strip():
+            errors.append(
+                "export.serve_downloads is true but export.advertise_host is empty. "
+                "This server cannot auto-detect its own externally reachable IP — "
+                "set [export] advertise_host to the address other machines should use to reach it."
+            )
+        if not isinstance(_download_port, int) or not (1 <= _download_port <= 65535):
+            errors.append(
+                f"export.download_port must be an integer between 1 and 65535, got {_download_port!r}."
+            )
+        if not isinstance(_url_ttl_minutes, int) or _url_ttl_minutes <= 0:
+            errors.append(
+                f"export.url_ttl_minutes must be a positive integer, got {_url_ttl_minutes!r}."
             )
 
     # API: every configured service must have a non-empty base_url string.

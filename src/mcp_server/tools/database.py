@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp import FastMCP
 
-from mcp_server.utils import export as export_utils
+from mcp_server.utils import download_server, export as export_utils
 from mcp_server.utils.errors import ToolError
 from mcp_server.utils.logging import get_logger
 
@@ -232,8 +232,18 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         further, hand the returned path to a downstream file-processing tool
         or external workflow instead of reading its contents directly.
 
+        If [export] serve_downloads is enabled in config.toml, the result
+        also includes "download_url": a time-limited (default 60 minutes),
+        unguessable HTTP URL for this CSV. It exists so a *different*
+        machine's MCP server — one that actually runs the Python code
+        processing this data — can stream the file over HTTP instead of
+        needing local filesystem access to this machine. Hand that URL to
+        the other server's download tool; do NOT GET it yourself to pull
+        the contents back into context.
+
         Returns {"path": str, "columns": [str], "row_count": int,
-        "preview": [dict] (first 5 rows only), "size_kb": float}.
+        "preview": [dict] (first 5 rows only), "size_kb": float,
+        "download_url": str (only present when serve_downloads is enabled)}.
 
         Args:
             db_name:  Database name from config.toml. Use db_list_databases() to see options.
@@ -256,13 +266,16 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         # datetime/Decimal from PostgreSQL/Oracle rows) are plain JSON types,
         # matching what db_query would have returned for the same rows.
         preview = json.loads(json.dumps(rows[:5], ensure_ascii=False, default=str))
-        return {
+        result = {
             "path": str(path),
             "columns": columns,
             "row_count": len(rows),
             "preview": preview,
             "size_kb": round(path.stat().st_size / 1024, 2),
         }
+        if cfg.get_download_config()["serve_downloads"]:
+            result["download_url"] = download_server.register_file(path)
+        return result
 
     @mcp.tool()
     def db_execute(db_name: str = "", sql: str = "", params: list[Any] = []) -> dict:

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.tools import database
-from mcp_server.utils import export as export_utils
+from mcp_server.utils import download_server, export as export_utils
 from mcp_server.utils.errors import ToolError
 from mcp_server.utils.logging import get_logger
 
@@ -383,6 +383,13 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         to_file=false (default) behavior is unchanged: series stays embedded
         per tag.
 
+        If [export] serve_downloads is enabled in config.toml, result.file
+        also includes "download_url": a time-limited (default 60 minutes),
+        unguessable HTTP URL for this CSV, meant to be handed to a
+        *different* machine's MCP server so it can stream the file over
+        HTTP instead of needing local filesystem access to this machine.
+        Do NOT GET that URL yourself to pull the contents back into context.
+
         Args:
             building:   Building code, e.g. 'K18'. Required — used to resolve
                         the Oracle zone/system table for each tag.
@@ -475,4 +482,6 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 "row_count": len(csv_rows),
                 "size_kb": round(path.stat().st_size / 1024, 2),
             }
+            if cfg.get_download_config()["serve_downloads"]:
+                result["file"]["download_url"] = download_server.register_file(path)
         return json.dumps(result, ensure_ascii=False, default=str)

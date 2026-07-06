@@ -5,6 +5,7 @@ from mcp.server.fastmcp import FastMCP
 
 import mcp_server.config as cfg
 from mcp_server.tools import api, custom, database, filesystem, gms, presentation
+from mcp_server.utils.download_server import start_download_server
 from mcp_server.utils.logging import setup_logging
 
 logger = setup_logging()
@@ -29,7 +30,9 @@ def create_server() -> FastMCP:
             "Call list_presentation_styles() to see slide presets before calling create_presentation(). "
             "For large result sets, use db_query_to_file / gms_history_values(to_file=true) to write "
             "them to a CSV instead of embedding them in the response — never read a large CSV back "
-            "into context."
+            "into context. If that CSV needs to be processed by a tool on a different machine's MCP "
+            "server, pass that server's tool the result's download_url (when present) instead of the "
+            "local path — do not fetch the URL yourself."
         ),
     )
     filesystem.register(mcp, cfg)
@@ -63,6 +66,14 @@ def main() -> None:
     except cfg.ConfigError as e:
         logger.error("Refusing to start: %s", e)
         sys.exit(1)
+
+    download_cfg = cfg.get_download_config()
+    if download_cfg["serve_downloads"]:
+        start_download_server()
+        logger.info(
+            "Download server listening on %s:%s",
+            download_cfg["download_host"], download_cfg["download_port"],
+        )
 
     logger.info("Starting MCP Server (transport=%s)", args.transport)
 

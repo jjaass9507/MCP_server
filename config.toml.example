@@ -57,6 +57,37 @@ analytics = "/home/user/data/analytics.sqlite"
 # Files older than 7 days (*.csv) are deleted automatically on each write.
 dir = "D:/FAC_Job/mcp_exports"
 
+# Optional: serve exported CSVs over HTTP so a *different* machine's MCP
+# server (e.g. one running the Python code that actually processes this
+# data) can download them by URL, since it has no access to this machine's
+# filesystem. The query tools then add a "download_url" alongside "path" in
+# their response — the CSV contents themselves never pass back through this
+# server's own tool responses.
+#
+# serve_downloads = false
+#
+# Bind address for the download HTTP server on *this* machine. "0.0.0.0"
+# listens on all interfaces; narrow it if this machine has multiple NICs.
+# download_host = "0.0.0.0"
+#
+# The IP/hostname the OTHER machine should use to reach this one. Required
+# whenever serve_downloads is true — this server cannot auto-detect its own
+# externally reachable address, and startup validation will refuse to start
+# without it.
+# advertise_host = "10.0.1.23"
+#
+# Port for the download HTTP server. Make sure the firewall on this machine
+# allows inbound connections to it from the consuming machine.
+# download_port = 8081
+#
+# Minutes before a download_url expires; after that, re-run the query tool
+# to get a fresh URL (the file itself is untouched, only re-registered).
+# The id in each URL is unguessable (secrets.token_urlsafe), but anyone who
+# obtains a valid URL before it expires can download that one file — an
+# acceptable risk level on an isolated internal network, not over the open
+# internet.
+# url_ttl_minutes = 60
+
 [api]
 # External HTTP APIs the server may call, addressed by a service name (the key).
 # The model uses the service name (e.g. "weather"); the api_key never leaves
