@@ -13,6 +13,7 @@ dependencies = [
     "pymssql>=2.3",
     "httpx>=0.27",
     "oracledb>=2.0",
+    "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]

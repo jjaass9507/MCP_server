@@ -4,7 +4,7 @@ import sys
 from mcp.server.fastmcp import FastMCP
 
 import mcp_server.config as cfg
-from mcp_server.tools import api, custom, database, filesystem, gms, presentation
+from mcp_server.tools import api, custom, database, filesystem, gms, plotting, presentation
 from mcp_server.utils.logging import setup_logging
 
 logger = setup_logging()
@@ -26,7 +26,10 @@ def create_server() -> FastMCP:
             "Call api_list_services() to see available external APIs before calling api_request(). "
             "Use push_notify() to send a Push+ notification to email or a group; always format its "
             "content as clean inline HTML and verify the sent_content in the result is correct. "
-            "Call list_presentation_styles() to see slide presets before calling create_presentation()."
+            "Call list_presentation_styles() to see slide presets before calling create_presentation(). "
+            "For large result sets, use db_query_to_file / gms_history_values(to_file=true) to write "
+            "them to a CSV instead of embedding them in the response, then plot_csv() to chart the "
+            "file and push_notify(image_path=...) to send it — never read a large CSV back into context."
         ),
     )
     filesystem.register(mcp, cfg)
@@ -35,6 +38,7 @@ def create_server() -> FastMCP:
     api.register(mcp, cfg)
     presentation.register(mcp, cfg)
     gms.register(mcp, cfg)
+    plotting.register(mcp, cfg)
     return mcp
 
 
