@@ -25,6 +25,7 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.utils.errors import ToolError
+from mcp_server.utils.version import code_info
 
 # Allowed math operators/names for the safe calculator
 _SAFE_NAMES = {
@@ -44,13 +45,18 @@ def register(mcp: FastMCP) -> None:
     def system_info() -> dict:
         """Return basic information about the server environment.
 
-        Includes: Python version, platform, current working directory, UTC timestamp.
+        Includes: Python version, platform, UTC timestamp, plus the running
+        code's path, git commit and branch. Call this to verify WHICH VERSION
+        of the server code is actually running — e.g. when a tool behaves
+        like an old, already-fixed version, check git_commit/git_branch here
+        before debugging anything else.
         """
         return {
             "python_version": sys.version,
             "platform": platform.platform(),
             "machine": platform.machine(),
             "utc_time": datetime.now(timezone.utc).isoformat(),
+            **code_info(),
         }
 
     @mcp.tool()

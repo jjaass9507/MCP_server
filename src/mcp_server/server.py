@@ -7,6 +7,7 @@ import mcp_server.config as cfg
 from mcp_server.tools import api, custom, database, filesystem, gms, presentation
 from mcp_server.utils.download_server import start_download_server
 from mcp_server.utils.logging import setup_logging
+from mcp_server.utils.version import code_info
 
 logger = setup_logging()
 
@@ -75,6 +76,11 @@ def main() -> None:
             download_cfg["download_host"], download_cfg["download_port"],
         )
 
+    info = code_info()
+    logger.info(
+        "Running code at %s (git %s, branch %s)",
+        info["code_path"], info["git_commit"], info["git_branch"],
+    )
     logger.info("Starting MCP Server (transport=%s)", args.transport)
 
     if args.transport == "sse":

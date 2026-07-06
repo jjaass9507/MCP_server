@@ -101,3 +101,58 @@ def test_parse_dt_invalid_raises():
 def test_parse_dt_invalid_message_mentions_label():
     with pytest.raises(ToolError, match="start_time"):
         gms._parse_dt("not-a-date", "start_time")
+
+
+# ── _fetch_points: category/equipment_type filtering (regression) ───────
+# Regression lock for commit d8482fb: building+device_id is not unique
+# (e.g. K18's A4 can be an air compressor AND a dryer AND a vacuum pump),
+# so filtering MUST happen on v_point_detail's own category/equipment_type
+# columns. The buggy original JOINed v_equipment_list, which only gated on
+# whether a matching equipment row EXISTS and then returned every point row
+# for that device_id — mixing all three categories together.
+
+class _FakeCfg:
+    @staticmethod
+    def resolve_db(name):
+        return f"fake://{name}"
+
+
+def _capture_run_select(monkeypatch):
+    captured = {}
+
+    def fake_run_select(dsn, cfg, sql, params=None):
+        captured["dsn"] = dsn
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(gms.database, "run_select", fake_run_select)
+    return captured
+
+
+def test_fetch_points_filters_on_v_point_detail_without_join(monkeypatch):
+    captured = _capture_run_select(monkeypatch)
+    gms._fetch_points(_FakeCfg, "K18", "A4", category="空壓機", equipment_type="離心機")
+    sql = captured["sql"]
+    assert "JOIN" not in sql.upper(), "JOIN against v_equipment_list reintroduces the mixing bug (d8482fb)"
+    assert "v_point_detail" in sql
+    assert "category = %(category)s" in sql
+    assert "equipment_type = %(equipment_type)s" in sql
+    assert captured["params"]["category"] == "空壓機"
+    assert captured["params"]["equipment_type"] == "離心機"
+
+
+def test_fetch_points_omits_filters_when_not_given(monkeypatch):
+    captured = _capture_run_select(monkeypatch)
+    gms._fetch_points(_FakeCfg, "K18", "A4")
+    sql = captured["sql"]
+    assert "category" not in sql
+    assert "equipment_type" not in sql
+    assert captured["params"] == {"building": "K18", "device_id": "A4"}
+
+
+def test_fetch_points_keyword_uses_like(monkeypatch):
+    captured = _capture_run_select(monkeypatch)
+    gms._fetch_points(_FakeCfg, "K18", "A4", keyword="壓力")
+    assert "point_name LIKE %(keyword)s" in captured["sql"]
+    assert captured["params"]["keyword"] == "%壓力%"

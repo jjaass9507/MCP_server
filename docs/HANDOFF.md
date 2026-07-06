@@ -243,6 +243,20 @@ commit**：7 個 GMS 工具功能（a3a3977..217ab08，`gms.py` 427 行、
 實測回報**。改 SQL 時把「請幫我用這幾個參數跑一次、貼回結果」的具體
 測試步驟寫給使用者。
 
+### 「修好的 bug 又出現了」→ 先查版本，再查程式（2026-07-06 實案）
+
+使用者曾回報 gms_list_points 混類 bug（d8482fb 已修）復發。查證結果：
+main 上的程式與行為都正確，真因是**廠內機跑的不是含修正的版本**（舊
+分支 commit 或 venv 內殘留舊複本）。遇到「已修復行為復發」時的固定
+流程：
+1. 請使用者呼叫 `system_info()` 工具（或看 server 啟動 log 的
+   「Running code at ...」行）——會回報 code_path / git_commit /
+   git_branch，一秒判斷版本。
+2. 或請使用者在廠內跑 `scripts/verify_deploy.ps1`——自動顯示目前
+   commit、更新到最新 main、並驗證 venv 匯入的是 repo 的 src/ 而非
+   site-packages 殘留複本（是殘留複本會直接指示重跑 install_offline）。
+3. 版本確認正確後，才進入程式碼層 debug。
+
 ### 慣例摘要
 
 - 遵守 `CLAUDE.md`：只改該改的、不順手重構、先問再假設。
