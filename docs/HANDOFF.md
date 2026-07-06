@@ -257,9 +257,10 @@ commit**：7 個 GMS 工具功能（a3a3977..217ab08，`gms.py` 427 行、
 
 ## 7. 優化方向 roadmap（按優先序）
 
-> **2026-07-03 新增最高優先需求**：大量查詢結果的檔案快取
-> （file-based handoff），完整需求、可行性評估與建議設計見 **§8**。
-> 完成 §8 後再繼續下面未完成的 4–7 項。
+> **2026-07-03 提出、2026-07-06 已實作**：大量查詢結果的檔案快取
+> （file-based handoff），完整需求、可行性評估、設計與**實作狀態**見
+> **§8**（commit `b72d93f`/`bd302ed`/`cc90fcb`）。待廠內實測通過後再繼續
+> 下面未完成的 4–7 項。
 
 1. ✅ **已完成（2026-07-03，commit `32173a1`）**：`_oracle_latest` 改為
    per-tag latest（見 §3）。仍待使用者廠內實測：挑一批含高頻+低頻 tag
@@ -300,10 +301,31 @@ commit**：7 個 GMS 工具功能（a3a3977..217ab08，`gms.py` 427 行、
 
 ---
 
-## 8. 待實作需求：大量查詢結果的檔案快取（file-based handoff）
+## 8. 已實作（待廠內實測）：大量查詢結果的檔案快取（file-based handoff）
 
-> 使用者 2026-07-03 提出，目前 roadmap 最高優先。實作前先跟使用者
-> 確認 §8.3 的設計取捨（尤其 export 目錄的實際 Windows 路徑）。
+> 使用者 2026-07-03 提出，2026-07-06 依 §8.3 的設計實作完成，commit：
+> `b72d93f`（export 基礎 + `db_query_to_file` + `gms_history_values(to_file)`）、
+> `bd302ed`（export 路徑測試）、`cc90fcb`（第二階段 `plot_csv` 繪圖工具，
+> 新增 `matplotlib` 依賴，含測試）。
+>
+> **開發機已驗證**：`pytest` 56 個測試全綠（含新增的 export/plotting
+> 測試）；`plot_csv` 在本機手動跑出 line 與 correlation 兩張 PNG，內容
+> 正確（見 commit 訊息/PR 描述附的驗證紀錄）。
+>
+> **尚待廠內實測**（開發機無法驗證的項目，見 §6「你能驗證什麼」）：
+> 1. CSV 用 Windows Excel 直接開啟，中文欄名/內容正常（utf-8-sig BOM）。
+> 2. `plot_csv` 在 Windows 上實際套用 `Microsoft JhengHei` 字型——開發機
+>    （Linux）沒有這個字型，圖表文字目前是用 fallback 的 DejaVu Sans
+>    渲染，中文會變成方塊字，這是預期中的開發機限制，不是 bug。
+> 3. `pyproject.toml` 新增 `matplotlib>=3.8` 依賴後，離線部署需重新跑一次
+>    `scripts/pack_offline.ps1` / `install_offline.ps1`（見 §1）；尚未在
+>    離線 Windows 環境跑過這個重新打包流程。
+> 4. `[export] dir` 指向真實的廠內 Windows 路徑後，`db_query_to_file` /
+>    `gms_history_values(to_file=true)` / `plot_csv` / `push_notify` 的
+>    端對端串接（查詢 → CSV → PNG → 推播）尚未跑過。
+>
+> 實作前已確認的設計取捨見 §8.3（export 目錄路徑等仍以使用者實際廠內
+> 路徑為準，目前 `config.toml.example` 用 Windows 占位路徑示範）。
 
 ### 8.1 問題
 

@@ -5,6 +5,7 @@ A modular Python MCP (Model Context Protocol) server that exposes several catego
 - **Filesystem** — read, write, list, search, and inspect files
 - **Database** — query and modify SQLite databases (by name alias, not raw path)
 - **API** — call external HTTP/REST APIs (by service name alias, not raw URL/key)
+- **Plotting** — chart CSV exports (line/scatter/bar/correlation) to a PNG
 - **Custom** — utility tools and a template for adding your own business logic
 
 Access to files and databases is controlled by `config.toml` — the model can only touch what you explicitly allow.
@@ -42,6 +43,13 @@ allow_write = true
 [database.connections]
 mydb      = "/home/user/data/mydb.sqlite"
 analytics = "/home/user/data/analytics.sqlite"
+
+[export]
+# Directory for large query results / charts (db_query_to_file,
+# gms_history_values(to_file=true), plot_csv). Must already exist.
+# Automatically added to allowed_paths. Files older than 7 days are
+# cleaned up automatically.
+dir = "/home/user/data/mcp_exports"
 ```
 
 You can point to a custom config location with the `MCP_CONFIG` environment variable:
@@ -129,6 +137,7 @@ Tools use a `db_name` alias from `config.toml` instead of a raw file path. Call 
 | `db_list_tables(db_name)` | List all tables |
 | `db_table_schema(db_name, table_name)` | Get column definitions |
 | `db_execute_script(db_name, script)` | Run a multi-statement SQL script |
+| `db_query_to_file(db_name, sql, params, filename)` | Like `db_query`, but writes the full result to a CSV in the export directory and returns only `{path, columns, row_count, preview (first 5 rows), size_kb}` — use for large result sets instead of `db_query` |
 
 ### GMS (compressed-air point/tag/value queries)
 
@@ -146,7 +155,7 @@ compressed-air queries; fall back to `db_query` for anything ad-hoc.
 | `gms_list_points(building, device_id, category, equipment_type, keyword)` | List monitoring points/tags for one device; `category` (broad, e.g. 空壓機/乾燥機/真空機) and/or `equipment_type` (specific, e.g. 離心機/變頻螺旋機) disambiguate duplicate `device_id`s |
 | `gms_list_pipe_points(building, system_name)` | List pipe-network points (HCDA/LCDA/HVAC) |
 | `gms_realtime_values(building, tag_names)` | Latest SCADA value for a list of already-known tags. Pure Oracle value lookup — resolve `tag_names` via `gms_list_points` first, it does not search by device_id/category/keyword |
-| `gms_history_values(building, start_time, end_time, tag_names)` | Historical value series for a list of already-known tags, clamped to a 1-day window, with per-tag max/min/latest summary. Same tag_names-only contract as `gms_realtime_values` |
+| `gms_history_values(building, start_time, end_time, tag_names, to_file)` | Historical value series for a list of already-known tags, clamped to a 1-day window, with per-tag max/min/latest summary. Same tag_names-only contract as `gms_realtime_values`. With `to_file=true`, the series is written to one CSV (all tags combined) under the export directory instead of being embedded, and the response keeps only the per-tag summary plus file info |
 
 ### API (external HTTP)
 
@@ -161,6 +170,16 @@ never exposed to the model. Call `api_list_services()` first to see what's avail
 | `push_notify(service, title, content, image_path, push_to_list)` | Send a Push+ notification; fills the template's `$_title` / `$_content` (content may be inline HTML). `image_path` embeds an image file as inline base64 — the server encodes it, so you never paste base64 yourself |
 
 The `token`/`api_key` is read from the service's `config.toml` block and never exposed to the model. For an internal service whose TLS certificate is not publicly trusted, set `verify = false` in its service block to skip certificate verification.
+
+### Plotting
+
+Charts a CSV file from `db_query_to_file` / `gms_history_values(to_file=true)` — closing the loop so large results never have to pass through the model's context:
+
+| Tool | Description |
+|------|-------------|
+| `plot_csv(csv_path, chart_type, x_column, y_columns, output_filename, title)` | Render `csv_path` as a `"line"` / `"scatter"` / `"bar"` chart (`x_column` vs `y_columns`) or a `"correlation"` heatmap, and save it as a PNG in the export directory. Returns `{path, size_kb, columns_plotted}` |
+
+Typical flow: `db_query_to_file` / `gms_history_values(to_file=true)` → `plot_csv` → `push_notify(image_path=...)`.
 
 ### Custom / Utility
 
@@ -353,9 +372,11 @@ MCP_server/
 │       │   ├── gms.py          # compressed-air point/tag/value queries
 │       │   ├── api.py
 │       │   ├── presentation.py # pptx generation via pptxgenjs
+│       │   ├── plotting.py     # plot_csv chart generation (matplotlib)
 │       │   └── custom.py
 │       └── utils/
 │           ├── errors.py
+│           ├── export.py       # CSV/PNG export helpers (filename, cleanup)
 │           └── logging.py      # Structured logging setup
 └── README.md
 ```
