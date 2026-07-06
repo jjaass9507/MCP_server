@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp import FastMCP
 
+from mcp_server.utils import export as export_utils
 from mcp_server.utils.errors import ToolError
 from mcp_server.utils.logging import get_logger
 
@@ -199,6 +200,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         Returns query results as a JSON string (list of row objects).
         Only SELECT statements are allowed; use db_execute for writes.
         Supports SQLite (file path), PostgreSQL, SQL Server and Oracle connections.
+        If the result could be large (roughly hundreds to thousands of rows),
+        use db_query_to_file instead — it writes the full result to a CSV
+        file and returns only a small summary, instead of every row as JSON.
 
         Args:
             db_name: Database name from config.toml (e.g. 'mydb'). Use db_list_databases() to see options.
@@ -210,6 +214,53 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         dsn = cfg.resolve_db(_resolve_db_name(db_name))
         rows = run_select(dsn, cfg, sql, params)
         return json.dumps(rows, ensure_ascii=False, default=str)
+
+    @mcp.tool()
+    def db_query_to_file(db_name: str = "", sql: str = "", params: list[Any] = [], filename: str = "") -> dict:
+        """Execute a SELECT query and write the full result to a CSV file, instead of returning it inline.
+
+        Use this instead of db_query whenever the result could be large
+        (roughly hundreds to thousands of rows) — db_query returns every row
+        as JSON in the tool response, which costs a lot of tokens and can
+        exceed the model's context limit entirely. This tool writes the
+        complete result to a CSV file under the server's configured export
+        directory and returns only a small summary.
+
+        Do NOT call read_file() on the returned path to pull the CSV back
+        into context — that defeats the purpose of this tool just as badly
+        as a giant db_query result would. If you need to analyze or chart
+        the data, hand the returned path to a file-based tool (e.g. plot_csv)
+        instead of reading its contents directly.
+
+        Returns {"path": str, "columns": [str], "row_count": int,
+        "preview": [dict] (first 5 rows only), "size_kb": float}.
+
+        Args:
+            db_name:  Database name from config.toml. Use db_list_databases() to see options.
+            sql:      A SELECT SQL statement.
+            params:   Optional positional parameters, same rules as db_query.
+            filename: Optional output filename (a .csv extension is enforced
+                      and unsafe characters are stripped). Defaults to a
+                      timestamped name (e.g. 'query_20260703_153000.csv') if omitted.
+        """
+        if not sql.strip().upper().startswith("SELECT"):
+            raise ToolError("db_query_to_file only accepts SELECT statements. Use db_execute for INSERT/UPDATE/DELETE.")
+        dsn = cfg.resolve_db(_resolve_db_name(db_name))
+        rows = run_select(dsn, cfg, sql, params)
+        columns = list(rows[0].keys()) if rows else []
+        export_dir = cfg.get_export_dir()
+        path = export_utils.export_csv(export_dir, columns, rows, filename)
+        # Round-trip through json with default=str so preview values (e.g.
+        # datetime/Decimal from PostgreSQL/Oracle rows) are plain JSON types,
+        # matching what db_query would have returned for the same rows.
+        preview = json.loads(json.dumps(rows[:5], ensure_ascii=False, default=str))
+        return {
+            "path": str(path),
+            "columns": columns,
+            "row_count": len(rows),
+            "preview": preview,
+            "size_kb": round(path.stat().st_size / 1024, 2),
+        }
 
     @mcp.tool()
     def db_execute(db_name: str = "", sql: str = "", params: list[Any] = []) -> dict:

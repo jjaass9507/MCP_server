@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.tools import database
+from mcp_server.utils import export as export_utils
 from mcp_server.utils.errors import ToolError
 from mcp_server.utils.logging import get_logger
 
@@ -358,6 +359,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         start_time: str = "",
         end_time: str = "",
         tag_names: list[str] = [],
+        to_file: bool = False,
     ) -> str:
         """Get a historical value series for a list of already-known tags (Mode E).
 
@@ -369,6 +371,17 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         clamped to the most recent 1 day of the requested end_time and the
         result reports adjusted=true.
 
+        Set to_file=true when querying multiple tags and/or a long time
+        window, especially if you plan to chart the data afterwards: instead
+        of embedding every (tag, datetime, value) sample inline, the series
+        is written to one CSV file (columns: tag_name, point_name, phase,
+        unit, datetime, value — all tags combined) under the server's export
+        directory, and the response keeps only adjusted/start_time/end_time,
+        each tag's point_name/phase/unit/tag_name/summary, and the file info.
+        Do NOT read_file() that CSV back into context — pass its path to a
+        file-based tool (e.g. plot_csv) instead. With to_file=false (default)
+        behavior is unchanged: series stays embedded per tag.
+
         Args:
             building:   Building code, e.g. 'K18'. Required — used to resolve
                         the Oracle zone/system table for each tag.
@@ -376,6 +389,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             end_time:   Range end, 'YYYY-MM-DD HH:MM:SS'. Required.
             tag_names:  Exact SCADA tag names to fetch, e.g. from a prior
                         gms_list_points call. Required.
+            to_file:    Write the series to a CSV file instead of embedding
+                        it in the response (see above). Default: False.
         """
         if not building or not start_time or not end_time or not tag_names:
             raise ToolError("請提供 building、start_time、end_time、tag_names（請先呼叫 gms_list_points 取得確切的 tag_name）。")
@@ -406,29 +421,57 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     series[row["TAGNAME"]].append({"value": row["VALUE"], "datetime": row["DATETIME"]})
 
         points_out = []
+        csv_rows: list[dict] = []
         for tag, meta in by_tag.items():
             pts = series[tag]
             summary = None
             if pts:
                 values = [p["value"] for p in pts]
                 summary = {"max": max(values), "min": min(values), "latest": pts[-1]["value"]}
-            points_out.append(
-                {
-                    "point_name": meta["point_name"],
-                    "phase": meta["phase"],
-                    "unit": meta["unit"],
-                    "tag_name": tag,
-                    "series": pts,
-                    "summary": summary,
-                }
-            )
-        return json.dumps(
-            {
-                "adjusted": adjusted,
-                "start_time": start_dt.strftime(_DT_FMT),
-                "end_time": end_dt.strftime(_DT_FMT),
-                "points": points_out,
-            },
-            ensure_ascii=False,
-            default=str,
-        )
+            if to_file:
+                for p in pts:
+                    csv_rows.append({
+                        "tag_name": tag,
+                        "point_name": meta["point_name"],
+                        "phase": meta["phase"],
+                        "unit": meta["unit"],
+                        "datetime": p["datetime"],
+                        "value": p["value"],
+                    })
+                points_out.append(
+                    {
+                        "point_name": meta["point_name"],
+                        "phase": meta["phase"],
+                        "unit": meta["unit"],
+                        "tag_name": tag,
+                        "summary": summary,
+                    }
+                )
+            else:
+                points_out.append(
+                    {
+                        "point_name": meta["point_name"],
+                        "phase": meta["phase"],
+                        "unit": meta["unit"],
+                        "tag_name": tag,
+                        "series": pts,
+                        "summary": summary,
+                    }
+                )
+
+        result: dict[str, Any] = {
+            "adjusted": adjusted,
+            "start_time": start_dt.strftime(_DT_FMT),
+            "end_time": end_dt.strftime(_DT_FMT),
+            "points": points_out,
+        }
+        if to_file:
+            export_dir = cfg.get_export_dir()
+            columns = ["tag_name", "point_name", "phase", "unit", "datetime", "value"]
+            path = export_utils.export_csv(export_dir, columns, csv_rows)
+            result["file"] = {
+                "path": str(path),
+                "row_count": len(csv_rows),
+                "size_kb": round(path.stat().st_size / 1024, 2),
+            }
+        return json.dumps(result, ensure_ascii=False, default=str)

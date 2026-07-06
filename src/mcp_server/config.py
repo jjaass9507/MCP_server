@@ -49,6 +49,30 @@ _allowed_paths: list[pathlib.Path] = [
 ]
 _allow_write: bool = _config.get("filesystem", {}).get("allow_write", False)
 
+# ── Export directory (large query results / charts written to CSV/PNG) ─────
+
+_export_dir_str: str = _config.get("export", {}).get("dir", "")
+_export_dir: pathlib.Path | None = (
+    pathlib.Path(_export_dir_str).resolve() if _export_dir_str else None
+)
+if _export_dir is not None:
+    # Let existing file tools (read_file for a quick preview, push_notify for
+    # image_path, plot_csv's PNG output) reach the export dir too.
+    _allowed_paths.append(_export_dir)
+
+
+def get_export_dir() -> pathlib.Path:
+    """Return the configured export directory for large query results / charts.
+
+    Raises ToolError if [export] dir is not set in config.toml.
+    """
+    if _export_dir is None:
+        raise ToolError(
+            "Export directory is not configured. "
+            'Add [export] dir = "..." (an absolute path) in config.toml.'
+        )
+    return _export_dir
+
 
 def check_path(p: pathlib.Path, write: bool = False) -> None:
     """Raise ToolError if p is outside every allowed directory, or if write
@@ -186,6 +210,13 @@ def validate_config() -> list[str]:
             errors.append(f"filesystem.allowed_paths entry does not exist: {p}")
         elif not p.is_dir():
             errors.append(f"filesystem.allowed_paths entry is not a directory: {p}")
+
+    # Export directory: must exist and be a directory if configured.
+    if _export_dir is not None:
+        if not _export_dir.exists():
+            errors.append(f"export.dir does not exist: {_export_dir}")
+        elif not _export_dir.is_dir():
+            errors.append(f"export.dir is not a directory: {_export_dir}")
 
     if not _allowed_paths and not _db_connections:
         warnings.append(
