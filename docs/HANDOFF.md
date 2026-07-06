@@ -321,6 +321,12 @@ commit**：7 個 GMS 工具功能（a3a3977..217ab08，`gms.py` 427 行、
 >
 > 實作前已確認的設計取捨見 §8.3（export 目錄路徑等仍以使用者實際廠內
 > 路徑為準，目前 `config.toml.example` 用 Windows 占位路徑示範）。
+>
+> **2026-07-06 追加**：跨機下載機制，commit `9ac1902`（先修好 export 檔名
+> 並發碰撞：同秒或同名 filename 現在都帶短隨機尾碼，見下方新增段落前的
+> 說明）、`777c77b`（下載服務本體 + config + 兩個匯出工具整合 `download_url`）、
+> `c323378`（下載服務測試，11 個，全綠，`pytest` 累計 65 個）。動機、設計、
+> 安全模型與待實測項目見新增的 **§8.5**。
 
 ### 8.1 問題
 
@@ -403,6 +409,73 @@ preview +（GMS）per-tag summary」；且 docstring 必須明確警告 agent
 - 廠內實測：CSV 用 Excel 直開中文欄位正常。
   （第二階段 PNG 圖表驗收標準已隨 `plot_csv` 於 2026-07-06 移除，不適用
   ——見上方實作狀態段落與 §8.3 第 4 點。）
+
+### 8.5 跨機下載（2026-07-06 新增）
+
+**實作狀態**：已完成，commit `777c77b`（下載服務 + config + 工具整合）、
+`c323378`（測試，11 個全綠）。開發機已驗證 HTTP 層行為（見下方「待廠內
+實測」列出目前無法驗證的項目）。
+
+**動機**：`db_query_to_file` / `gms_history_values(to_file=true)` 把大結果
+寫成 CSV 留在**本機**磁碟（§8.1–8.3）。但實際讀取這些 CSV、做後續處理
+（畫圖、分析）的 Python 執行環境，跑在**另一台機器上的 MCP server**——
+它連不到這台機器的檔案系統，本機路徑對它毫無用處。需要一個機制讓「路徑」
+可以變成「跨機可下載的東西」，同時維持「資料本體永不進 LLM context」
+這個從 §8 一路延續下來的核心原則。
+
+**設計**：
+
+- 本 server 常駐一個**唯讀** HTTP 下載服務（`utils/download_server.py`），
+  用標準庫 `http.server.ThreadingHTTPServer`，只服務
+  `GET /exports/{id}`，不做目錄列表，其他路徑一律 404。
+- 每次 `db_query_to_file` / `gms_history_values(to_file=true)` 寫完 CSV
+  後（若 `[export] serve_downloads = true`），呼叫
+  `register_file(path)` 把該檔案登記進一個模組級的記憶體註冊表
+  （`id -> (path, expires_at)`），id 用 `secrets.token_urlsafe(16)`
+  （不可猜測），回傳的完整 URL 塞進工具結果的 `download_url` 欄位。
+  未開啟 `serve_downloads` 時完全不加這個 key（不是 null）。
+- URL 有效期由 `[export] url_ttl_minutes`（預設 60 分鐘）控制，過期或
+  對應檔案已被 §8.3 的 7 天清理刪除時，兩者都回 404 並順手清掉註冊表項目。
+- LLM 拿到 `download_url` 後，**自己不可以 GET 它**——docstring 明確
+  警告——而是把這個 URL 交給另一台 MCP server 上的下載工具，由那邊的
+  server 去串流下載、落地成那台機器上的本機檔案再處理。資料本體因此
+  從頭到尾都只在「兩台 server 之間」流動，不曾進入任一邊 LLM 的 context。
+
+**安全模型與殘餘風險**：
+
+- id 不可猜測（128 bit token），但**不需要額外認證**——同一個內網網段
+  內，任何人只要在 TTL 到期前取得這個 URL，就能下載那一個檔案。這是
+  刻意接受的風險：部署環境是隔離內網（見 §1「部署環境」），跟現有
+  SSE transport 無認證、預設 bind `0.0.0.0`（§7 第 6 項）的風險等級一致。
+  **如果未來部署環境改變（例如接上更大的內部網路或有其他租戶），這個
+  假設要重新評估。**
+- 未來若要加強，可以在 HTTP 請求上加一個 shared-secret header（下載
+  服務與消費端 server 都設同一組密鑰），目前**沒有**實作，先以文件記錄
+  這個選項，等有實際需求或風險升高再做。
+- log 只記 id 前 8 碼與狀態碼，不記完整 URL／完整 id——避免 log 檔案
+  本身變成洩漏下載能力的管道。
+
+**部署需求**：
+
+- `[export] advertise_host` 必須填**這台機器對另一台 server 而言的實際
+  可連線位址**（本機無法自動偵測自己的對外 IP，故 `serve_downloads = true`
+  時 `advertise_host` 沒填會被 `validate_config()` 擋在啟動階段）。
+- 防火牆需開放 `[export] download_port`（預設 8081）供消費端 server 的
+  來源 IP／網段連入。
+- 依 §1，這仍是離線 Windows 環境的一部分——下載服務本身只用標準庫
+  （`http.server`），沒有新增任何外部依賴，不影響 `pack_offline.ps1` /
+  `install_offline.ps1` 的打包流程。
+
+**待廠內實測**（開發機無法驗證的項目，見 §6「你能驗證什麼」）：
+
+1. 另一台真實的 MCP server（或至少另一台機器上的一個 Python script）
+   能用 `advertise_host:download_port` 實際 GET 到 `download_url` 並把
+   CSV 串流下載成功——開發機的測試都是本機 loopback（127.0.0.1），
+   沒有驗證過真正跨機器、跨網段的連線路徑。
+2. 廠內防火牆規則允許消費端機器連進 `download_port`。
+3. 兩台機器的時鐘沒有嚴重飄移（TTL 是用 server 自己的 `time.time()`
+   算的 wall-clock 到期時間，理論上不受消費端時鐘影響，但實際部署時
+   建議留意）。
 
 ---
 
