@@ -92,7 +92,7 @@ def test_cleanup_old_exports_ignores_non_matching_extensions(tmp_path):
 
     export_utils.cleanup_old_exports(tmp_path)
 
-    assert other.exists()  # only *.csv / *.png are cleaned up
+    assert other.exists()  # only *.csv is cleaned up
 
 
 # ── db_query_to_file ─────────────────────────────────────────────────────

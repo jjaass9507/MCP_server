@@ -379,8 +379,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         directory, and the response keeps only adjusted/start_time/end_time,
         each tag's point_name/phase/unit/tag_name/summary, and the file info.
         Do NOT read_file() that CSV back into context — pass its path to a
-        file-based tool (e.g. plot_csv) instead. With to_file=false (default)
-        behavior is unchanged: series stays embedded per tag.
+        downstream file-processing tool or external workflow instead. With
+        to_file=false (default) behavior is unchanged: series stays embedded
+        per tag.
 
         Args:
             building:   Building code, e.g. 'K18'. Required — used to resolve

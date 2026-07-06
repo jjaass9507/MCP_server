@@ -49,7 +49,7 @@ _allowed_paths: list[pathlib.Path] = [
 ]
 _allow_write: bool = _config.get("filesystem", {}).get("allow_write", False)
 
-# ── Export directory (large query results / charts written to CSV/PNG) ─────
+# ── Export directory (large query results written to CSV) ──────────────────
 
 _export_dir_str: str = _config.get("export", {}).get("dir", "")
 _export_dir: pathlib.Path | None = (
@@ -57,12 +57,12 @@ _export_dir: pathlib.Path | None = (
 )
 if _export_dir is not None:
     # Let existing file tools (read_file for a quick preview, push_notify for
-    # image_path, plot_csv's PNG output) reach the export dir too.
+    # image_path) reach the export dir too.
     _allowed_paths.append(_export_dir)
 
 
 def get_export_dir() -> pathlib.Path:
-    """Return the configured export directory for large query results / charts.
+    """Return the configured export directory for large query results.
 
     Raises ToolError if [export] dir is not set in config.toml.
     """

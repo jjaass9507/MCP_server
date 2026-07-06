@@ -1,10 +1,7 @@
 """Shared helpers for writing large tool results to files under the
 configured export directory (see config.get_export_dir()).
 
-Used by database.db_query_to_file, gms.gms_history_values(to_file=True), and
-tools/plotting.py — kept here (rather than in database.py) so plotting.py
-doesn't need to import the database module just to reuse filename/cleanup
-logic.
+Used by database.db_query_to_file and gms.gms_history_values(to_file=True).
 """
 
 import csv
@@ -39,19 +36,18 @@ def sanitize_filename(filename: str, ext: str) -> str:
 
 
 def cleanup_old_exports(export_dir: pathlib.Path, max_age_days: int = _MAX_AGE_DAYS) -> None:
-    """Delete *.csv / *.png files in export_dir older than max_age_days.
+    """Delete *.csv files in export_dir older than max_age_days.
 
     Best-effort: a file that fails to delete (e.g. open elsewhere) is left
     in place and silently skipped.
     """
     cutoff = time.time() - max_age_days * 86400
-    for pattern in ("*.csv", "*.png"):
-        for f in export_dir.glob(pattern):
-            try:
-                if f.is_file() and f.stat().st_mtime < cutoff:
-                    f.unlink()
-            except OSError:
-                pass
+    for f in export_dir.glob("*.csv"):
+        try:
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass
 
 
 def write_csv(path: pathlib.Path, columns: list[str], rows: list[dict]) -> None:

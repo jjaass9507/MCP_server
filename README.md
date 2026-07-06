@@ -5,7 +5,6 @@ A modular Python MCP (Model Context Protocol) server that exposes several catego
 - **Filesystem** — read, write, list, search, and inspect files
 - **Database** — query and modify SQLite databases (by name alias, not raw path)
 - **API** — call external HTTP/REST APIs (by service name alias, not raw URL/key)
-- **Plotting** — chart CSV exports (line/scatter/bar/correlation) to a PNG
 - **Custom** — utility tools and a template for adding your own business logic
 
 Access to files and databases is controlled by `config.toml` — the model can only touch what you explicitly allow.
@@ -45,8 +44,8 @@ mydb      = "/home/user/data/mydb.sqlite"
 analytics = "/home/user/data/analytics.sqlite"
 
 [export]
-# Directory for large query results / charts (db_query_to_file,
-# gms_history_values(to_file=true), plot_csv). Must already exist.
+# Directory for large query results (db_query_to_file,
+# gms_history_values(to_file=true)). Must already exist.
 # Automatically added to allowed_paths. Files older than 7 days are
 # cleaned up automatically.
 dir = "/home/user/data/mcp_exports"
@@ -170,16 +169,6 @@ never exposed to the model. Call `api_list_services()` first to see what's avail
 | `push_notify(service, title, content, image_path, push_to_list)` | Send a Push+ notification; fills the template's `$_title` / `$_content` (content may be inline HTML). `image_path` embeds an image file as inline base64 — the server encodes it, so you never paste base64 yourself |
 
 The `token`/`api_key` is read from the service's `config.toml` block and never exposed to the model. For an internal service whose TLS certificate is not publicly trusted, set `verify = false` in its service block to skip certificate verification.
-
-### Plotting
-
-Charts a CSV file from `db_query_to_file` / `gms_history_values(to_file=true)` — closing the loop so large results never have to pass through the model's context:
-
-| Tool | Description |
-|------|-------------|
-| `plot_csv(csv_path, chart_type, x_column, y_columns, output_filename, title)` | Render `csv_path` as a `"line"` / `"scatter"` / `"bar"` chart (`x_column` vs `y_columns`) or a `"correlation"` heatmap, and save it as a PNG in the export directory. Returns `{path, size_kb, columns_plotted}` |
-
-Typical flow: `db_query_to_file` / `gms_history_values(to_file=true)` → `plot_csv` → `push_notify(image_path=...)`.
 
 ### Custom / Utility
 
@@ -372,11 +361,10 @@ MCP_server/
 │       │   ├── gms.py          # compressed-air point/tag/value queries
 │       │   ├── api.py
 │       │   ├── presentation.py # pptx generation via pptxgenjs
-│       │   ├── plotting.py     # plot_csv chart generation (matplotlib)
 │       │   └── custom.py
 │       └── utils/
 │           ├── errors.py
-│           ├── export.py       # CSV/PNG export helpers (filename, cleanup)
+│           ├── export.py       # CSV export helpers (filename, cleanup)
 │           └── logging.py      # Structured logging setup
 └── README.md
 ```

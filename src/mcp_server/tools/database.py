@@ -228,9 +228,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
         Do NOT call read_file() on the returned path to pull the CSV back
         into context — that defeats the purpose of this tool just as badly
-        as a giant db_query result would. If you need to analyze or chart
-        the data, hand the returned path to a file-based tool (e.g. plot_csv)
-        instead of reading its contents directly.
+        as a giant db_query result would. If you need to analyze the data
+        further, hand the returned path to a downstream file-processing tool
+        or external workflow instead of reading its contents directly.
 
         Returns {"path": str, "columns": [str], "row_count": int,
         "preview": [dict] (first 5 rows only), "size_kb": float}.

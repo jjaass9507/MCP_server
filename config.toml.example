@@ -47,14 +47,14 @@ analytics = "/home/user/data/analytics.sqlite"
 # ora      = "oracle://scott:tiger@db:1521/XEPDB1"
 
 [export]
-# Directory used by db_query_to_file, gms_history_values(to_file=true), and
-# plot_csv to write large results (CSV) and charts (PNG) instead of returning
-# them inline to the model. Only required if you use those tools.
+# Directory used by db_query_to_file and gms_history_values(to_file=true) to
+# write large results (CSV) instead of returning them inline to the model.
+# Only required if you use those tools.
 # Must already exist — startup validation fails if it doesn't.
 # Automatically added to filesystem allowed_paths, so read_file/list_directory
 # can also reach it (e.g. to preview a file's size), but do NOT read a whole
 # large CSV back into the model's context — that defeats the purpose.
-# Files older than 7 days (*.csv, *.png) are deleted automatically on each write.
+# Files older than 7 days (*.csv) are deleted automatically on each write.
 dir = "D:/FAC_Job/mcp_exports"
 
 [api]

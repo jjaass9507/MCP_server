@@ -305,24 +305,19 @@ commit**：7 個 GMS 工具功能（a3a3977..217ab08，`gms.py` 427 行、
 
 > 使用者 2026-07-03 提出，2026-07-06 依 §8.3 的設計實作完成，commit：
 > `b72d93f`（export 基礎 + `db_query_to_file` + `gms_history_values(to_file)`）、
-> `bd302ed`（export 路徑測試）、`cc90fcb`（第二階段 `plot_csv` 繪圖工具，
-> 新增 `matplotlib` 依賴，含測試）。
+> `bd302ed`（export 路徑測試）。原 `cc90fcb`（第二階段 `plot_csv` 繪圖工具，
+> 新增 `matplotlib` 依賴，含測試）**已於 2026-07-06 依使用者要求移除**——
+> 檔案快取本體（`[export]`、`db_query_to_file`、
+> `gms_history_values(to_file=true)`）維持不變，只拿掉繪圖功能，
+> `matplotlib` 依賴也一併移除。
 >
-> **開發機已驗證**：`pytest` 56 個測試全綠（含新增的 export/plotting
-> 測試）；`plot_csv` 在本機手動跑出 line 與 correlation 兩張 PNG，內容
-> 正確（見 commit 訊息/PR 描述附的驗證紀錄）。
+> **開發機已驗證**：`pytest` 53 個測試全綠（export 測試仍在，plotting
+> 測試已隨功能一併移除）。
 >
 > **尚待廠內實測**（開發機無法驗證的項目，見 §6「你能驗證什麼」）：
 > 1. CSV 用 Windows Excel 直接開啟，中文欄名/內容正常（utf-8-sig BOM）。
-> 2. `plot_csv` 在 Windows 上實際套用 `Microsoft JhengHei` 字型——開發機
->    （Linux）沒有這個字型，圖表文字目前是用 fallback 的 DejaVu Sans
->    渲染，中文會變成方塊字，這是預期中的開發機限制，不是 bug。
-> 3. `pyproject.toml` 新增 `matplotlib>=3.8` 依賴後，離線部署需重新跑一次
->    `scripts/pack_offline.ps1` / `install_offline.ps1`（見 §1）；尚未在
->    離線 Windows 環境跑過這個重新打包流程。
-> 4. `[export] dir` 指向真實的廠內 Windows 路徑後，`db_query_to_file` /
->    `gms_history_values(to_file=true)` / `plot_csv` / `push_notify` 的
->    端對端串接（查詢 → CSV → PNG → 推播）尚未跑過。
+> 2. `[export] dir` 指向真實的廠內 Windows 路徑後，`db_query_to_file` /
+>    `gms_history_values(to_file=true)` 的端對端串接（查詢 → CSV）尚未跑過。
 >
 > 實作前已確認的設計取捨見 §8.3（export 目錄路徑等仍以使用者實際廠內
 > 路徑為準，目前 `config.toml.example` 用 Windows 占位路徑示範）。
@@ -388,6 +383,11 @@ preview +（GMS）per-tag summary」；且 docstring 必須明確警告 agent
    `pack_offline.ps1` / `install_offline.ps1`（見 §1）。中文圖表
    需指定字型（Microsoft JhengHei），離線機上要驗證。
 
+   **【已移除】2026-07-06 依使用者要求移除 `plot_csv`（原 commit
+   cc90fcb）與 `matplotlib` 依賴**：本點所述設計仍保留於此作為歷史紀錄，
+   但目前不適用——檔案快取（第 1–3 點）維持不變；若未來需要畫圖功能，
+   需重新評估設計與依賴。
+
 5. **明確不建議**：通用 `exec_python`（任意程式碼執行）工具。廠務機
    上風險過高，也違反本專案「把固定領域邏輯收斂成參數化工具」的路線
    （§3 的教訓）。若未來真的需要彈性分析，再評估受限的 pandas 表達式
@@ -399,8 +399,9 @@ preview +（GMS）per-tag summary」；且 docstring 必須明確警告 agent
   CSV 檔案內容完整正確。
 - 既有呼叫（不帶 `to_file`）行為完全不變：既有 39 個測試全綠，
   並為新路徑補測試（CSV 寫出、preview 截斷、舊檔清理）。
-- 廠內實測：CSV 用 Excel 直開中文欄位正常；（第二階段）PNG 圖表
-  中文不變豆腐字、`push_notify` 附圖送達。
+- 廠內實測：CSV 用 Excel 直開中文欄位正常。
+  （第二階段 PNG 圖表驗收標準已隨 `plot_csv` 於 2026-07-06 移除，不適用
+  ——見上方實作狀態段落與 §8.3 第 4 點。）
 
 ---
 
