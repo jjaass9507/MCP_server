@@ -12,6 +12,7 @@ Zone 判斷、GMS/PMS 系統分類、Tag 分批、1 天歷史上限、跨庫合�
 
 import json
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp import FastMCP
@@ -204,6 +205,11 @@ def _group_tags_by_table(building: str, tags: list[str]) -> dict[str, list[str]]
     return groups
 
 
+def _is_numeric(value: Any) -> bool:
+    """True for values usable in max/min/latest summaries (excludes bool)."""
+    return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+
+
 # ── tool registration ────────────────────────────────────────────────────────
 
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
@@ -360,6 +366,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         end_time: str = "",
         tag_names: list[str] = [],
         to_file: bool = False,
+        include_summary: bool = True,
     ) -> str:
         """Get a historical value series for a list of already-known tags (Mode E).
 
@@ -390,15 +397,26 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         HTTP instead of needing local filesystem access to this machine.
         Do NOT GET that URL yourself to pull the contents back into context.
 
+        When included, each tag's summary (max/min/latest) is computed only
+        from numeric samples in that tag's series — non-numeric values (e.g.
+        text/status readings) are dropped before the max/min/latest
+        calculation so they can't crash it or skew the result.
+
         Args:
-            building:   Building code, e.g. 'K18'. Required — used to resolve
-                        the Oracle zone/system table for each tag.
-            start_time: Range start, 'YYYY-MM-DD HH:MM:SS'. Required.
-            end_time:   Range end, 'YYYY-MM-DD HH:MM:SS'. Required.
-            tag_names:  Exact SCADA tag names to fetch, e.g. from a prior
-                        gms_list_points call. Required.
-            to_file:    Write the series to a CSV file instead of embedding
-                        it in the response (see above). Default: False.
+            building:        Building code, e.g. 'K18'. Required — used to
+                              resolve the Oracle zone/system table for each
+                              tag.
+            start_time:      Range start, 'YYYY-MM-DD HH:MM:SS'. Required.
+            end_time:        Range end, 'YYYY-MM-DD HH:MM:SS'. Required.
+            tag_names:       Exact SCADA tag names to fetch, e.g. from a
+                              prior gms_list_points call. Required.
+            to_file:         Write the series to a CSV file instead of
+                              embedding it in the response (see above).
+                              Default: False.
+            include_summary: Include each tag's max/min/latest summary in
+                              the response. Set False to skip it (e.g. when
+                              you only need the raw series or file and want
+                              a smaller response). Default: True.
         """
         if not building or not start_time or not end_time or not tag_names:
             raise ToolError("請提供 building、start_time、end_time、tag_names（請先呼叫 gms_list_points 取得確切的 tag_name）。")
@@ -432,10 +450,19 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         csv_rows: list[dict] = []
         for tag, meta in by_tag.items():
             pts = series[tag]
-            summary = None
-            if pts:
-                values = [p["value"] for p in pts]
-                summary = {"max": max(values), "min": min(values), "latest": pts[-1]["value"]}
+            point_out = {
+                "point_name": meta["point_name"],
+                "phase": meta["phase"],
+                "unit": meta["unit"],
+                "tag_name": tag,
+            }
+            if include_summary:
+                numeric_values = [p["value"] for p in pts if _is_numeric(p["value"])]
+                point_out["summary"] = (
+                    {"max": max(numeric_values), "min": min(numeric_values), "latest": numeric_values[-1]}
+                    if numeric_values
+                    else None
+                )
             if to_file:
                 for p in pts:
                     csv_rows.append({
@@ -446,26 +473,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                         "datetime": p["datetime"],
                         "value": p["value"],
                     })
-                points_out.append(
-                    {
-                        "point_name": meta["point_name"],
-                        "phase": meta["phase"],
-                        "unit": meta["unit"],
-                        "tag_name": tag,
-                        "summary": summary,
-                    }
-                )
             else:
-                points_out.append(
-                    {
-                        "point_name": meta["point_name"],
-                        "phase": meta["phase"],
-                        "unit": meta["unit"],
-                        "tag_name": tag,
-                        "series": pts,
-                        "summary": summary,
-                    }
-                )
+                point_out["series"] = pts
+            points_out.append(point_out)
 
         result: dict[str, Any] = {
             "adjusted": adjusted,

@@ -268,3 +268,54 @@ def test_gms_history_values_to_file_true_omits_series_includes_file(gms_mcp, mon
         rows = list(csv.DictReader(f))
     assert len(rows) == 3
     assert {r["tag_name"] for r in rows} == {"K18_GMS_A1_PRESSURE", "K18_GMS_A1_TEMP"}
+
+
+def test_gms_history_values_include_summary_false_omits_summary(gms_mcp):
+    gms_history_values = _get_tool(gms_mcp, "gms_history_values")
+    import json
+
+    raw = gms_history_values(
+        building="K18",
+        start_time="2026-07-03 00:00:00",
+        end_time="2026-07-03 23:59:59",
+        tag_names=["K18_GMS_A1_PRESSURE", "K18_GMS_A1_TEMP"],
+        include_summary=False,
+    )
+    result = json.loads(raw)
+
+    for point in result["points"]:
+        assert "summary" not in point
+        assert "series" in point
+
+
+def test_gms_history_values_summary_ignores_non_numeric_values(monkeypatch):
+    monkeypatch.setattr(cfg, "resolve_db", lambda name: "dummy-dsn")
+    monkeypatch.setattr(gms, "_fetch_points_by_tags", lambda cfg, building, tag_names: _FAKE_POINTS)
+    mixed_rows = [
+        {"TAGNAME": "K18_GMS_A1_PRESSURE", "VALUE": "OFF", "DATETIME": datetime(2026, 7, 3, 11, 55, 0)},
+        {"TAGNAME": "K18_GMS_A1_PRESSURE", "VALUE": 1.1, "DATETIME": datetime(2026, 7, 3, 12, 0, 0)},
+        {"TAGNAME": "K18_GMS_A1_PRESSURE", "VALUE": None, "DATETIME": datetime(2026, 7, 3, 12, 2, 0)},
+        {"TAGNAME": "K18_GMS_A1_PRESSURE", "VALUE": 1.2, "DATETIME": datetime(2026, 7, 3, 12, 5, 0)},
+    ]
+    monkeypatch.setattr(
+        gms, "_oracle_history",
+        lambda cfg, dsn, table, tags, start, end: [
+            row for row in mixed_rows if row["TAGNAME"] in tags
+        ],
+    )
+    mcp = FastMCP(name="test")
+    gms.register(mcp, cfg)
+    gms_history_values = _get_tool(mcp, "gms_history_values")
+    import json
+
+    raw = gms_history_values(
+        building="K18",
+        start_time="2026-07-03 00:00:00",
+        end_time="2026-07-03 23:59:59",
+        tag_names=["K18_GMS_A1_PRESSURE"],
+    )
+    result = json.loads(raw)
+
+    pressure = next(p for p in result["points"] if p["tag_name"] == "K18_GMS_A1_PRESSURE")
+    assert len(pressure["series"]) == 4
+    assert pressure["summary"] == {"max": 1.2, "min": 1.1, "latest": 1.2}
