@@ -84,6 +84,33 @@ def test_register_and_get_success(running_server, tmp_path):
     assert resp.headers["content-length"] == str(len(csv_bytes))
 
 
+def test_pptx_served_with_ooxml_content_type(running_server, tmp_path):
+    pptx_path = tmp_path / "deck.pptx"
+    pptx_bytes = b"PK\x03\x04 fake pptx bytes"
+    pptx_path.write_bytes(pptx_bytes)
+
+    url = download_server.register_file(pptx_path)
+    resp = httpx.get(url)
+
+    assert resp.status_code == 200
+    assert resp.content == pptx_bytes
+    assert resp.headers["content-type"] == (
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
+    assert resp.headers["content-disposition"] == 'attachment; filename="deck.pptx"'
+
+
+def test_unknown_extension_served_as_octet_stream(running_server, tmp_path):
+    bin_path = tmp_path / "thing.bin"
+    bin_path.write_bytes(b"\x00\x01\x02")
+
+    url = download_server.register_file(bin_path)
+    resp = httpx.get(url)
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/octet-stream"
+
+
 def test_register_file_url_shape(running_server, tmp_path):
     csv_path = tmp_path / "a.csv"
     csv_path.write_text("x", encoding="utf-8")

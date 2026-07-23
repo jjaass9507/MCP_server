@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 
+from mcp_server.utils import download_server
 from mcp_server.utils.errors import ToolError
 from mcp_server.utils.logging import get_logger
 
@@ -598,6 +599,10 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                            (e.g. 'D:/FAC_Job/Agent_test/output.pptx').
                            NEVER use /tmp or Linux paths — they will be rejected.
                            Ask the user for the output directory if unsure.
+                           When [export] serve_downloads is enabled in config.toml,
+                           the success message also carries a time-limited download
+                           URL — relay it to the user, since they usually cannot
+                           reach this server's local filesystem path.
             style_preset:  Fallback preset name used ONLY when slides_json contains no
                            style object at all. Ignored otherwise.
             title_font:    Fallback font used only when slides_json has no title_font.
@@ -714,6 +719,12 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     "File confirmed on disk. "
                     "Use verify_presentation() to render PNG previews for visual QA."
                 )
+                # When the client can't reach this machine's filesystem, the
+                # local path above is useless to it — hand back a time-limited
+                # download URL instead (same mechanism as CSV exports).
+                if cfg.get_download_config()["serve_downloads"]:
+                    url = download_server.register_file(out)
+                    msg += f"\nDownload URL (share this with the user): {url}"
                 if content_warnings:
                     msg += (
                         "\n\nCONTENT QUALITY NOTES (the deck generated fine, but these "

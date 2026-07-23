@@ -1,12 +1,12 @@
-"""Read-only HTTP download server for cross-machine CSV handoff.
+"""Read-only HTTP download server for cross-machine file handoff.
 
-db_query_to_file / gms_history_values(to_file=true) write large query
-results to CSV files on this machine's disk. When the Python code that
-consumes that data runs as a tool on a *different* machine's MCP server, a
-local file path is useless to it — it needs a URL. This module runs a
-minimal, read-only HTTP server that streams a registered file back by an
-unguessable, time-limited id. The CSV contents never pass back through this
-server's own tool responses; only the download_url does.
+Tools that write a file to this machine's disk — db_query_to_file /
+gms_history_values(to_file=true) (CSV) and create_presentation (.pptx) —
+produce a local path that is useless when the client (or another machine's
+MCP server) has no access to this filesystem. This module runs a minimal,
+read-only HTTP server that streams a registered file back by an unguessable,
+time-limited id. The file contents never pass back through this server's own
+tool responses; only the download_url does.
 """
 
 import http.server
@@ -26,6 +26,14 @@ _lock = threading.Lock()
 _registry: dict[str, tuple[pathlib.Path, float]] = {}
 
 _httpd: http.server.ThreadingHTTPServer | None = None
+
+# Content types for the file kinds this server hands off. Anything else is
+# streamed as a generic binary download (the filename in Content-Disposition
+# still carries the real extension, so clients save it correctly).
+_CONTENT_TYPES: dict[str, str] = {
+    ".csv": "text/csv; charset=utf-8",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+}
 
 
 def _purge_expired() -> None:
@@ -76,8 +84,11 @@ class _DownloadHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             size = path.stat().st_size
+            content_type = _CONTENT_TYPES.get(
+                path.suffix.lower(), "application/octet-stream"
+            )
             self.send_response(200)
-            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(size))
             self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
             self.end_headers()

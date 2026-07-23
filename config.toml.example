@@ -57,12 +57,13 @@ analytics = "/home/user/data/analytics.sqlite"
 # Files older than 7 days (*.csv) are deleted automatically on each write.
 dir = "D:/FAC_Job/mcp_exports"
 
-# Optional: serve exported CSVs over HTTP so a *different* machine's MCP
-# server (e.g. one running the Python code that actually processes this
-# data) can download them by URL, since it has no access to this machine's
-# filesystem. The query tools then add a "download_url" alongside "path" in
-# their response — the CSV contents themselves never pass back through this
-# server's own tool responses.
+# Optional: serve generated files (exported CSVs, and .pptx files from
+# create_presentation) over HTTP so a *different* machine — the client, or
+# another machine's MCP server — can download them by URL, since it has no
+# access to this machine's filesystem. The query tools then add a
+# "download_url" alongside "path" in their response, and create_presentation
+# appends a download URL to its success message. The file contents themselves
+# never pass back through this server's own tool responses.
 #
 # serve_downloads = false
 #
