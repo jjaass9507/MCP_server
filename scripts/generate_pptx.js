@@ -129,6 +129,25 @@ function coverSvg(accentColor, wIn, hIn) {
         + `</svg>`;
 }
 
+/** True if a hex colour is perceptually light (for choosing grid/label tone). */
+function isLight(hex) {
+    const c = stripHash(hex || "FFFFFF");
+    const n = parseInt(c, 16);
+    const r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+    // Rec. 601 luma.
+    return (0.299 * r + 0.587 * g + 0.114 * b) > 150;
+}
+
+/** Cohesive multi-series chart palette derived from the accent colour, so a
+ *  chart matches the rest of the deck instead of using pptxgenjs defaults. */
+function chartPalette(accent, n) {
+    const a = stripHash(accent);
+    const base = [a, shade(a, 0.30), shade(a, -0.28), shade(a, 0.50), shade(a, -0.12), shade(a, 0.68)];
+    const out = [];
+    for (let i = 0; i < Math.max(n, 1); i++) out.push(base[i % base.length]);
+    return out;
+}
+
 /** Render an icon from the bundle. Returns false if icon name not found. */
 function addIcon(slide, iconName, x, y, sizein, hexColor) {
     if (!iconName) return false;
@@ -219,7 +238,11 @@ function makeBulletItems(bullets, bodyFont, bodyText, bodySize) {
                 fontFace: bodyFont,
                 fontSize: indented ? bodySize - 2 : bodySize,
                 color: bodyText,
-                paraSpaceAfter: 6,
+                // More breathing room between bullets reads as intentional
+                // spacing rather than a cramped list.
+                paraSpaceAfter: 9,
+                paraSpaceBefore: 2,
+                lineSpacingMultiple: 1.15,
             },
         };
     });
@@ -453,6 +476,69 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
                 }
             });
 
+            if (slideDef.notes) slide.addNotes(slideDef.notes);
+            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
+            break;
+        }
+
+        // ── chart (native, editable OOXML chart) ──────────────────────────────
+        // chart: {layout:"chart", title:"...", chart_type:"bar|line|pie|doughnut|area",
+        //         categories:["Q1","Q2",...],
+        //         series:[{name:"營收", values:[10,20,...]}, ...]}
+        case "chart": {
+            addTitleBar(slide, pptx, style, slideDef.title);
+            const typeMap = {
+                bar: pptx.ChartType.bar, line: pptx.ChartType.line,
+                pie: pptx.ChartType.pie, doughnut: pptx.ChartType.doughnut,
+                area: pptx.ChartType.area,
+            };
+            const ctype = typeMap[slideDef.chart_type] || pptx.ChartType.bar;
+            const isPie = ctype === pptx.ChartType.pie || ctype === pptx.ChartType.doughnut;
+            const cats  = slideDef.categories || [];
+            const series = slideDef.series || [];
+
+            const data = isPie
+                ? [{ name: (series[0] && series[0].name) || "", labels: cats,
+                     values: (series[0] && series[0].values) || [] }]
+                : series.map(s => ({ name: s.name || "", labels: cats, values: s.values || [] }));
+
+            const gridColor = isLight(style.bodyBg) ? "E5E5E5" : "3A3A4A";
+            const palette = chartPalette(accentColor, isPie ? cats.length : series.length);
+            const opts = {
+                x:0.5, y:1.35, w:9.0, h:contentMaxH - 1.5,
+                chartColors: palette,
+                showTitle:false,
+                showLegend: isPie || series.length > 1,
+                legendPos:"b", legendColor:bodyText, legendFontFace:bodyFont, legendFontSize:11,
+                dataLabelColor: isPie ? style.accentText : bodyText,
+                dataLabelFontFace: bodyFont, dataLabelFontSize:11,
+            };
+            if (isPie) {
+                opts.showPercent = true;
+                opts.showValue = false;
+            } else {
+                opts.barDir = "col";
+                opts.showValue = false;
+                opts.catAxisLabelColor = subtitleColor;
+                opts.catAxisLabelFontFace = bodyFont;
+                opts.catAxisLabelFontSize = 11;
+                opts.valAxisLabelColor = subtitleColor;
+                opts.valAxisLabelFontFace = bodyFont;
+                opts.valAxisLabelFontSize = 11;
+                opts.valGridLine = { color: gridColor, size:0.5 };
+                opts.catGridLine = { style:"none" };
+                opts.valAxisLineColor = gridColor;
+                opts.catAxisLineColor = gridColor;
+            }
+
+            if (data.length && cats.length) {
+                slide.addChart(ctype, data, opts);
+            } else {
+                slide.addText("[chart: provide categories + series]", {
+                    x:0.5, y:2.5, w:9.0, h:0.5,
+                    fontFace:bodyFont, fontSize:14, color:subtitleColor, align:"center",
+                });
+            }
             if (slideDef.notes) slide.addNotes(slideDef.notes);
             addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
             break;
@@ -857,6 +943,15 @@ async function runTest() {
                   { value:"63",  label:"內建圖示",      icon:"check",        desc:"Lucide ISC 授權 SVG bundle" },
                   { value:"<1s", label:"生成時間",      icon:"trending-up",  desc:"單次呼叫完成整份簡報" },
               ] },
+            { layout:"chart", title:"季度工具使用量成長",
+              section:"效能數據",
+              chart_type:"bar",
+              categories:["Q1","Q2","Q3","Q4"],
+              series:[
+                  { name:"資料庫查詢", values:[120, 180, 260, 340] },
+                  { name:"簡報生成",   values:[20, 55, 95, 160] },
+              ],
+              notes:"強調簡報生成使用量的成長曲線。" },
             { layout:"two_column", title:"方案比較",
               section:"設計決策",
               left_title:"pptxgenjs（現行）", left_icon:"check",

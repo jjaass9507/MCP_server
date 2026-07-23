@@ -357,13 +357,14 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             "  their palette; '橘色活潑' → preset warm + their orange as accent_color;\n"
             "  dark theme → preset dark/aurora + their colours. Always carry over EVERY\n"
             "  colour and font the user specified — never silently drop one.\n\n"
-            "=== Slide Layouts (12 total) ===\n"
+            "=== Slide Layouts (13 total) ===\n"
             "  title        — hero title + subtitle (use for first slide only)\n"
             "  agenda       — table-of-contents with numbered items; optional active_item highlight\n"
             "  section      — left-stripe section divider with title + subtitle + optional icon\n"
             "  content      — title bar + bullet list; supports eyebrow label and speaker notes\n"
             "  two_column   — title bar + left/right columns with optional column titles\n"
             "  stats        — title bar + up to 4 KPI cards (value + label + description)\n"
+            "  chart        — title bar + native editable chart (bar/line/pie/doughnut/area)\n"
             "  process      — title bar + 3-5 step cards connected by arrows (SOP / flow)\n"
             "  timeline     — title bar + horizontal milestone timeline (roadmap / schedule)\n"
             "  big_message  — full-page bold statement (accent bg by default) + supporting text\n"
@@ -374,7 +375,11 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             "  agenda:      items:[\"章節一\", \"章節二\", ...], active_item:2 (optional, highlights that item)\n"
             "  big_message: message:\"核心訊息（15字內）\", supporting:\"說明\", icon:\"optional\", bg:\"subtle\" (optional, uses body bg)\n"
             "  timeline:    events:[{date:\"Q1\", label:\"里程碑\", desc:\"說明\", icon:\"optional\"}, ...] (3-6 events)\n"
-            "  process:     steps:[{label:\"步驟名\", desc:\"說明\", icon:\"optional\"}, ...] (3-5 steps)\n\n"
+            "  process:     steps:[{label:\"步驟名\", desc:\"說明\", icon:\"optional\"}, ...] (3-5 steps)\n"
+            "  chart:       chart_type:\"bar\"|\"line\"|\"pie\"|\"doughnut\"|\"area\",\n"
+            "               categories:[\"Q1\",\"Q2\",...],\n"
+            "               series:[{name:\"營收\", values:[10,20,...]}, ...]\n"
+            "               (pie/doughnut use the first series only; colours derive from the accent)\n\n"
             "=== Extra Fields (any layout) ===\n"
             "  eyebrow  — small all-caps accent label above body (e.g. 'KEY INSIGHT', '第二章')\n"
             "  section  — section name shown in footer (requires style.show_footer: true)\n"
@@ -563,6 +568,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         - Do NOT use vague 1-2 word bullets like "Introduction" or "Summary".
         - Use eyebrow field for small accent labels (e.g. "KEY INSIGHT", "章節名").
         - Use stats layout for KPI/number slides (up to 4 cards).
+        - Use chart layout for real data series (bar/line/pie/doughnut/area) — it
+          renders a NATIVE editable chart; pass categories + series (see format).
         - Use quote layout for featured quotes or testimonials.
         - Enable footer with show_footer=true in style for professional page numbering.
         - Add icons to enhance visual clarity:
