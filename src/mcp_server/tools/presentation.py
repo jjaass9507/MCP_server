@@ -743,14 +743,21 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
     def verify_presentation(pptx_path: str, qa_output_dir: str = "") -> str:
-        """Render a .pptx file to PNG images for visual quality assurance.
+        """Render a .pptx to per-slide PNG images (or a PDF) for visual QA.
 
-        Requires LibreOffice to be installed and accessible on PATH (soffice or libreoffice).
-        Returns the list of generated PNG file paths so you can inspect each slide visually.
+        Converts the deck with LibreOffice, then rasterizes EVERY slide. A
+        direct '--convert-to png' only exports the first slide, so this goes
+        via PDF (which contains all slides) and splits it into one PNG per
+        slide using poppler's pdftoppm when available. If pdftoppm is not
+        installed, the multi-page PDF is returned instead — it still shows
+        every slide for visual review.
+
+        Requires LibreOffice (soffice/libreoffice) on PATH. Per-slide PNG
+        previews additionally require poppler-utils (the 'pdftoppm' command).
 
         Args:
             pptx_path:     Absolute path to the .pptx file to render.
-            qa_output_dir: Directory for PNG output. Defaults to the same directory as the .pptx.
+            qa_output_dir: Directory for output. Defaults to the .pptx's directory.
         """
         pptx = pathlib.Path(pptx_path).resolve()
         cfg.check_path(pptx)
@@ -783,33 +790,61 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         else:
             out_dir = pptx.parent
 
+        stem = pptx.stem
+
+        # Step 1: pptx -> PDF. LibreOffice renders every slide into the PDF;
+        # a direct '--convert-to png' would only export the first slide.
         result = subprocess.run(
-            [soffice, "--headless", "--convert-to", "png", "--outdir", str(out_dir), str(pptx)],
+            [soffice, "--headless", "--convert-to", "pdf", "--outdir", str(out_dir), str(pptx)],
             capture_output=True,
             text=True,
             encoding="utf-8",
             timeout=120,
         )
-
-        if result.returncode != 0:
+        pdf = out_dir / f"{stem}.pdf"
+        if result.returncode != 0 or not pdf.exists():
             err = (result.stderr or result.stdout or "unknown error").strip()
-            raise ToolError(f"LibreOffice conversion failed: {err}")
+            raise ToolError(f"LibreOffice PDF conversion failed: {err}")
 
-        stem = pptx.stem
-        pngs = sorted(out_dir.glob(f"{stem}*.png"))
-        if not pngs:
-            # LibreOffice may name them differently
-            pngs = sorted(out_dir.glob("*.png"))
+        font_note = (
+            "\n\nNote: if title/body fonts are Georgia or Trebuchet MS, "
+            "LibreOffice may substitute them — visual width may differ from Windows."
+        )
 
+        # Step 2: PDF -> one PNG per slide via poppler's pdftoppm, if present.
+        # Without poppler we still hand back the PDF, which shows every slide.
+        pdftoppm = shutil.which("pdftoppm") or shutil.which("pdftoppm.exe")
+        if not pdftoppm:
+            return (
+                f"Rendered all slides to PDF: {pdf}\n"
+                "Open it to review every slide. For per-slide PNG previews, "
+                "install poppler-utils (which provides 'pdftoppm') and re-run."
+                + font_note
+            )
+
+        prefix = out_dir / f"{stem}-slide"
+        raster = subprocess.run(
+            [pdftoppm, "-png", "-r", "150", str(pdf), str(prefix)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        if raster.returncode != 0:
+            err = (raster.stderr or raster.stdout or "unknown error").strip()
+            raise ToolError(f"pdftoppm rasterization failed: {err}")
+
+        # pdftoppm zero-pads the page number to the deck's digit width
+        # (e.g. -01..-11), so a plain sort keeps slides in order.
+        pngs = sorted(out_dir.glob(f"{stem}-slide*.png"))
         if not pngs:
             return (
-                "LibreOffice ran successfully but no PNG files were found in "
-                f"{out_dir}. Check LibreOffice output: {result.stdout}"
+                f"PDF rendered to {pdf}, but pdftoppm produced no PNGs. "
+                f"Output: {raster.stdout or raster.stderr or '(empty)'}"
             )
 
         paths_str = "\n".join(str(p) for p in pngs)
         return (
-            f"Rendered {len(pngs)} PNG(s) to {out_dir}:\n{paths_str}\n\n"
-            "Note: if title/body fonts are Georgia or Trebuchet MS, "
-            "LibreOffice may substitute them — visual width may differ from Windows."
+            f"Rendered {len(pngs)} slide PNG(s) to {out_dir}:\n{paths_str}"
+            + font_note
         )

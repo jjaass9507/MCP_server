@@ -98,6 +98,37 @@ function svgToDataUri(svgText) {
     return `data:image/svg+xml;base64,${Buffer.from(svgText, "utf8").toString("base64")}`;
 }
 
+/** Shift a hex colour toward black (pct<0) or white (pct>0). pct in -1..1. */
+function shade(hex, pct) {
+    const c = (hex || "000000").replace(/^#/, "");
+    const n = parseInt(c, 16);
+    let r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+    const t = pct < 0 ? 0 : 255;
+    const p = Math.abs(pct);
+    r = Math.round((t - r) * p) + r;
+    g = Math.round((t - g) * p) + g;
+    b = Math.round((t - b) * p) + b;
+    return ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toUpperCase();
+}
+
+/** Full-bleed cover background: diagonal accent→dark gradient with faint
+ *  circles for depth. Rendered as an SVG data URI (reuses svgToDataUri, so no
+ *  new dependency and it works offline). White hero text reads on it for every
+ *  preset because the gradient always darkens toward one corner. */
+function coverSvg(accentColor, wIn, hIn) {
+    const a = stripHash(accentColor);
+    const dark = shade(a, -0.5);
+    const w = 1000, h = Math.round(1000 * hIn / wIn);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`
+        + `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">`
+        + `<stop offset="0" stop-color="#${a}"/><stop offset="1" stop-color="#${dark}"/>`
+        + `</linearGradient></defs>`
+        + `<rect width="${w}" height="${h}" fill="url(#g)"/>`
+        + `<circle cx="${Math.round(w * 0.82)}" cy="${Math.round(h * 0.18)}" r="${Math.round(h * 0.55)}" fill="#FFFFFF" opacity="0.08"/>`
+        + `<circle cx="${Math.round(w * 0.68)}" cy="${Math.round(h * 0.95)}" r="${Math.round(h * 0.4)}" fill="#FFFFFF" opacity="0.05"/>`
+        + `</svg>`;
+}
+
 /** Render an icon from the bundle. Returns false if icon name not found. */
 function addIcon(slide, iconName, x, y, sizein, hexColor) {
     if (!iconName) return false;
@@ -210,20 +241,25 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
 
         // ── title ─────────────────────────────────────────────────────────────
         case "title": {
+            // Full-bleed gradient cover instead of a flat top band.
+            slide.addImage({ data: svgToDataUri(coverSvg(accentColor, 10, 5.625)),
+                x:0, y:0, w:"100%", h:"100%" });
+            const dimWhite = shade("FFFFFF", -0.25);
+            // Short accent rule above the title for a designed feel.
             slide.addShape(pptx.ShapeType.rect, {
-                x:0, y:0, w:"100%", h:3.2,
-                fill:{ color:accentColor }, line:{ color:accentColor },
+                x:0.72, y:1.95, w:0.6, h:0.07,
+                fill:{ color:"FFFFFF" }, line:{ color:"FFFFFF" },
             });
             slide.addText(slideDef.title || "", {
-                x:0.6, y:0.65, w:8.8, h:1.8,
-                fontFace:titleFont, fontSize:38, bold:true,
-                color:style.accentText, valign:"middle", align:"left", wrap:true,
+                x:0.7, y:2.2, w:8.6, h:1.6,
+                fontFace:titleFont, fontSize:40, bold:true,
+                color:"FFFFFF", valign:"top", align:"left", wrap:true,
             });
             if (slideDef.subtitle) {
                 slide.addText(slideDef.subtitle, {
-                    x:0.6, y:3.35, w:8.8, h:1.5,
-                    fontFace:bodyFont, fontSize:21,
-                    color:subtitleColor, valign:"top", wrap:true,
+                    x:0.72, y:3.85, w:8.4, h:1.2,
+                    fontFace:bodyFont, fontSize:19,
+                    color:dimWhite, valign:"top", align:"left", wrap:true,
                 });
             }
             break;
@@ -231,31 +267,36 @@ function buildSlide(pptx, slideDef, style, pageNum, totalPages) {
 
         // ── section ───────────────────────────────────────────────────────────
         case "section": {
-            // Left vertical accent stripe (avoids heavy full-width band)
-            slide.addShape(pptx.ShapeType.rect, {
-                x:0, y:0, w:0.35, h:"100%",
-                fill:{ color:accentColor }, line:{ color:accentColor },
-            });
+            // Same gradient-cover family as the title slide, so section
+            // dividers read as part of one designed deck.
+            slide.addImage({ data: svgToDataUri(coverSvg(accentColor, 10, 5.625)),
+                x:0, y:0, w:"100%", h:"100%" });
+            const dimWhite = shade("FFFFFF", -0.28);
             const hasIcon = slideDef.icon && ICONS.has(slideDef.icon);
-            const titleY  = hasIcon ? 1.6 : 1.9;
-            const titleW  = hasIcon ? 6.9 : 9.2;
             if (hasIcon) {
-                // Large decorative icon on right side
-                addIcon(slide, slideDef.icon, 7.3, 1.0, 1.5, accentColor);
+                // Large decorative icon, top-right, in white on the gradient.
+                addIcon(slide, slideDef.icon, 8.3, 0.7, 1.1, "FFFFFF");
+            }
+            // Eyebrow label distinguishes a section divider from the cover.
+            if (slideDef.section) {
+                slide.addText(String(slideDef.section).toUpperCase(), {
+                    x:0.72, y:2.0, w:8.4, h:0.35,
+                    fontFace:bodyFont, fontSize:12, bold:true,
+                    color:dimWhite, charSpacing:3, valign:"middle",
+                });
             }
             slide.addText(slideDef.title || "", {
-                x:0.6, y:titleY, w:titleW, h:1.7,
-                fontFace:titleFont, fontSize:40, bold:true,
-                color:accentColor, valign:"middle", align:"left", wrap:true,
+                x:0.7, y:2.38, w:8.6, h:1.5,
+                fontFace:titleFont, fontSize:38, bold:true,
+                color:"FFFFFF", valign:"top", align:"left", wrap:true,
             });
             if (slideDef.subtitle) {
                 slide.addText(slideDef.subtitle, {
-                    x:0.6, y:titleY + 1.75, w:titleW, h:0.85,
-                    fontFace:bodyFont, fontSize:20,
-                    color:subtitleColor, align:"left", wrap:true,
+                    x:0.72, y:3.9, w:8.4, h:0.95,
+                    fontFace:bodyFont, fontSize:18,
+                    color:dimWhite, align:"left", valign:"top", wrap:true,
                 });
             }
-            addFooter(slide, pptx, style, slideDef.section, pageNum, totalPages);
             break;
         }
 
@@ -760,7 +801,12 @@ async function generate(inputPath, outputPath) {
     if (warnings.length) console.warn("WARNINGS:\n" + warnings.map(w => "  " + w).join("\n"));
 
     const pptx = new PptxGenJS();
-    pptx.layout = "LAYOUT_WIDE";
+    // 16:9 canvas is 10 x 5.625in. All slide-builder coordinates below are
+    // authored against this 10 x 5.625 canvas (content width 9.2, contentMaxH
+    // 5.625, footer at y 5.25). LAYOUT_WIDE (13.33 x 7.5) would leave every
+    // slide's content crammed into the top-left region with large empty right
+    // and bottom margins.
+    pptx.layout = "LAYOUT_16x9";
     pptx.author = "MCP Server";
     pptx.title  = raw.title || "";
 
