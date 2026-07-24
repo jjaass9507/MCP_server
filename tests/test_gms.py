@@ -156,3 +156,97 @@ def test_fetch_points_keyword_uses_like(monkeypatch):
     gms._fetch_points(_FakeCfg, "K18", "A4", keyword="壓力")
     assert "point_name LIKE %(keyword)s" in captured["sql"]
     assert captured["params"]["keyword"] == "%壓力%"
+
+
+# ── _validate_bucket ─────────────────────────────────────────────────────
+
+def test_validate_bucket_accepts_presets():
+    for b in ("15m", "1h", "1d"):
+        assert gms._validate_bucket(b) == b
+
+
+def test_validate_bucket_rejects_unknown():
+    with pytest.raises(ToolError):
+        gms._validate_bucket("30m")
+
+
+# ── _validate_aggs ───────────────────────────────────────────────────────
+
+def test_validate_aggs_empty_defaults_to_avg():
+    assert gms._validate_aggs([]) == ["avg"]
+
+
+def test_validate_aggs_lowercases_and_dedupes_preserving_order():
+    assert gms._validate_aggs(["MAX", "avg", "Max"]) == ["max", "avg"]
+
+
+def test_validate_aggs_allows_full_menu():
+    menu = ["avg", "min", "max", "last", "first", "count"]
+    assert gms._validate_aggs(menu) == menu
+
+
+def test_validate_aggs_rejects_unknown():
+    with pytest.raises(ToolError):
+        gms._validate_aggs(["median"])
+
+
+# ── _estimate_rows ───────────────────────────────────────────────────────
+
+def test_estimate_rows_hourly_over_two_days():
+    start = datetime(2026, 7, 1, 0, 0, 0)
+    end = datetime(2026, 7, 3, 0, 0, 0)  # 48h span
+    # 2 tags × (48 buckets + 1 inclusive edge) = 98
+    assert gms._estimate_rows(2, start, end, "1h") == 98
+
+
+def test_estimate_rows_daily_scales_down():
+    start = datetime(2026, 7, 1)
+    end = datetime(2026, 7, 31)  # 30-day span
+    assert gms._estimate_rows(1, start, end, "1d") == 31
+
+
+# ── _oracle_aggregate: SQL construction ──────────────────────────────────
+
+def _capture_oracle(monkeypatch):
+    captured = {}
+
+    def fake_run_select(dsn, cfg, sql, params=None):
+        captured["dsn"] = dsn
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    monkeypatch.setattr(gms.database, "run_select", fake_run_select)
+    return captured
+
+
+def test_oracle_aggregate_selects_and_groups_by_same_bucket_expr(monkeypatch):
+    captured = _capture_oracle(monkeypatch)
+    start = datetime(2026, 7, 1)
+    end = datetime(2026, 7, 2)
+    gms._oracle_aggregate(
+        _FakeCfg, "dsn", "FACCIMTAB.ZONE1_K18_GMS", ["T1", "T2"],
+        start, end, "1h", ["avg", "max"],
+    )
+    sql = captured["sql"]
+    bucket_expr = gms._BUCKET_SQL["1h"]
+    # The bucket expression must appear in both SELECT and GROUP BY, verbatim.
+    assert sql.count(bucket_expr) == 2
+    assert "AVG(VALUE) AS AGG_AVG" in sql
+    assert "MAX(VALUE) AS AGG_MAX" in sql
+    # WHERE filters the bare column so an index range scan stays usable — the
+    # bucket math must never end up inside WHERE.
+    where = sql[sql.index("WHERE"):sql.index("GROUP BY")]
+    assert "TRUNC" not in where
+    assert captured["params"]["start_time"] == start
+    assert captured["params"]["end_time"] == end
+
+
+def test_oracle_aggregate_last_uses_keep_dense_rank(monkeypatch):
+    captured = _capture_oracle(monkeypatch)
+    gms._oracle_aggregate(
+        _FakeCfg, "dsn", "FACCIMTAB.ZONE1_K18_GMS", ["T1"],
+        datetime(2026, 7, 1), datetime(2026, 7, 2), "1d", ["last"],
+    )
+    # 'last' is the newest-in-time value, not the largest: must use KEEP.
+    assert "KEEP (DENSE_RANK LAST ORDER BY DATETIME) AS AGG_LAST" in captured["sql"]

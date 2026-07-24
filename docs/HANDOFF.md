@@ -23,7 +23,7 @@ service 名別名，token/DSN/api_key 一律由 `config.toml` 注入、絕不進
 |------|------|------|
 | `filesystem.py` | `read_file` / `write_file` / `list_directory` / `search_files` / `file_info` / `delete_file` / `fs_list_allowed_paths` | 白名單內的檔案存取 |
 | `database.py` | `db_query` / `db_execute` / `db_list_databases` / `db_list_schemas` / `db_list_tables` / `db_table_schema` / `db_execute_script` | SQLite / PostgreSQL / MSSQL / Oracle（Oracle 強制唯讀） |
-| `gms.py` | `gms_list_equipment` / `gms_list_points` / `gms_list_pipe_points` / `gms_realtime_values` / `gms_history_values` | 空壓系統點位/即時/歷史值查詢（本專案最重要的領域工具，見 §3） |
+| `gms.py` | `gms_list_equipment` / `gms_list_points` / `gms_list_pipe_points` / `gms_realtime_values` / `gms_history_values` / `gms_history_aggregate` | 空壓系統點位/即時/歷史值查詢（本專案最重要的領域工具，見 §3）；`gms_history_aggregate` 為長期分析用的 Oracle 端降採樣（時間桶聚合） |
 | `api.py` | `api_list_services` / `api_request` / `push_notify` | config 驅動的外部 HTTP API；Push+ 2.0 通知 |
 | `presentation.py` | `list_presentation_styles` / `plan_presentation_outline` / `create_presentation` / `verify_presentation` | 透過 Node.js pptxgenjs 產生可編輯的 .pptx |
 | `custom.py` | `echo` / `system_info` / `calculate` / `format_data` | 工具範本 + 連線測試 |

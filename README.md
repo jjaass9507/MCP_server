@@ -161,6 +161,7 @@ compressed-air queries; fall back to `db_query` for anything ad-hoc.
 | `gms_list_pipe_points(building, system_name)` | List pipe-network points (HCDA/LCDA/HVAC) |
 | `gms_realtime_values(building, tag_names)` | Latest SCADA value for a list of already-known tags. Pure Oracle value lookup — resolve `tag_names` via `gms_list_points` first, it does not search by device_id/category/keyword |
 | `gms_history_values(building, start_time, end_time, tag_names, to_file)` | Historical value series for a list of already-known tags, clamped to a 1-day window, with per-tag max/min/latest summary. Same tag_names-only contract as `gms_realtime_values`. With `to_file=true`, the series is written to one CSV (all tags combined) under the export directory instead of being embedded, and the response keeps only the per-tag summary plus file info (including a `download_url` when `[export] serve_downloads` is enabled) |
+| `gms_history_aggregate(building, start_time, end_time, tag_names, bucket, aggs, to_file)` | Downsampled history for long-range analysis: buckets the raw per-minute series in Oracle (`GROUP BY` time bucket) so the response scales with bucket count, not range length. `bucket` is `15m`/`1h`/`1d`; `aggs` multi-selects from `avg`/`min`/`max`/`last`/`first`/`count` (each becomes a column, `last`/`first` are newest/oldest-in-time not largest/smallest). Same tag_names-only contract; prefer over `gms_history_values` for ranges beyond a day. Inline results exceeding a few thousand (tag × bucket) rows require `to_file=true` |
 
 ### API (external HTTP)
 
