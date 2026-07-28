@@ -232,8 +232,8 @@ def test_oracle_aggregate_selects_and_groups_by_same_bucket_expr(monkeypatch):
     bucket_expr = gms._BUCKET_SQL["1h"]
     # The bucket expression must appear in both SELECT and GROUP BY, verbatim.
     assert sql.count(bucket_expr) == 2
-    assert "AVG(VALUE) AS AGG_AVG" in sql
-    assert "MAX(VALUE) AS AGG_MAX" in sql
+    assert f"AVG({gms._NUM}) AS AGG_AVG" in sql
+    assert f"MAX({gms._NUM}) AS AGG_MAX" in sql
     # WHERE filters the bare column so an index range scan stays usable — the
     # bucket math must never end up inside WHERE.
     where = sql[sql.index("WHERE"):sql.index("GROUP BY")]
@@ -250,3 +250,38 @@ def test_oracle_aggregate_last_uses_keep_dense_rank(monkeypatch):
     )
     # 'last' is the newest-in-time value, not the largest: must use KEEP.
     assert "KEEP (DENSE_RANK LAST ORDER BY DATETIME) AS AGG_LAST" in captured["sql"]
+
+
+# ── numeric conversion: VALUE is VARCHAR2 with NULLs/junk ────────────────
+# The historian's VALUE column is text, so aggregating it raw is wrong twice
+# over: AVG() raises ORA-01722/ORA-00932, and MIN()/MAX() compare
+# lexicographically ("9.5" > "10.2"). Every aggregate must go through the
+# numeric conversion, which maps non-numeric samples to NULL.
+
+def test_no_aggregate_touches_the_raw_value_column():
+    for name, expr in gms._AGG_SQL.items():
+        assert gms._NUM in expr, f"{name} must aggregate the converted value"
+        assert "(VALUE)" not in expr.replace(gms._NUM, ""), (
+            f"{name} aggregates raw VARCHAR2 VALUE — AVG errors, MIN/MAX "
+            f"compare lexicographically"
+        )
+
+
+def test_numeric_conversion_maps_bad_values_to_null():
+    # Junk must become NULL (and be skipped by the aggregate), never raise.
+    assert "DEFAULT NULL ON CONVERSION ERROR" in gms._NUM
+
+
+def test_count_counts_usable_numeric_samples_not_raw_rows():
+    # COUNT(*) would include NULL/junk rows and overstate bucket coverage.
+    assert gms._AGG_SQL["count"] == f"COUNT({gms._NUM})"
+
+
+# ── 15m bucket must survive a TIMESTAMP column ───────────────────────────
+
+def test_15m_bucket_casts_datetime_to_date():
+    # On a TIMESTAMP column, (DATETIME - TRUNC(DATETIME)) yields an INTERVAL,
+    # which cannot be multiplied by 1440. CAST keeps the arithmetic numeric.
+    expr = gms._BUCKET_SQL["15m"]
+    assert "CAST(DATETIME AS DATE)" in expr
+    assert "(DATETIME -" not in expr
