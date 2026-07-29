@@ -190,6 +190,42 @@ def test_validate_aggs_rejects_unknown():
         gms._validate_aggs(["median"])
 
 
+# ── _numeric: VALUE is VARCHAR2 and may hold NULLs/junk ──────────────────
+# The historian shares one text VALUE column between digital and analog
+# points. Summarising those samples as they arrive is wrong twice over:
+# max()/min() over a list containing None raises TypeError, and over plain
+# strings they compare lexicographically ("9.5" > "10.2").
+
+def test_numeric_parses_text_samples():
+    assert gms._numeric(["7.25", "10.2", "9.5"]) == [7.25, 10.2, 9.5]
+
+
+def test_numeric_drops_nulls_instead_of_raising():
+    # max() over a list holding None used to raise TypeError and kill the tool.
+    values = gms._numeric(["7.1", None, "7.3"])
+    assert values == [7.1, 7.3]
+    assert max(values) == 7.3
+
+
+def test_numeric_drops_non_numeric_readings():
+    assert gms._numeric(["7.1", "OFF", " ", "BAD", "7.3"]) == [7.1, 7.3]
+
+
+def test_numeric_all_unusable_yields_empty():
+    # Caller must report summary=null here, not invent a number.
+    assert gms._numeric([None, "OFF", ""]) == []
+
+
+def test_numeric_comparison_is_not_lexicographic():
+    # As strings, max() would pick "9.5"; numerically the answer is 10.2.
+    assert max(gms._numeric(["9.5", "10.2"])) == 10.2
+
+
+def test_numeric_preserves_order_for_latest():
+    # "latest" is the last usable sample, so order must survive filtering.
+    assert gms._numeric(["1.0", None, "2.0", "OFF"])[-1] == 2.0
+
+
 # ── _estimate_rows ───────────────────────────────────────────────────────
 
 def test_estimate_rows_hourly_over_two_days():

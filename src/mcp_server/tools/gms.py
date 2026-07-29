@@ -165,6 +165,25 @@ def _validate_aggs(aggs: list[str]) -> list[str]:
     return result
 
 
+def _numeric(values: list) -> list[float]:
+    """Coerce raw historian samples to floats, dropping unusable ones.
+
+    Oracle's VALUE column is VARCHAR2 — digital and analog points share it —
+    so a series can hold NULLs and non-numeric text ('OFF', 'BAD', ' ').
+    Comparing those samples as they arrive is wrong twice over: max()/min()
+    over a list containing None raises TypeError, and over plain strings they
+    compare lexicographically ("9.5" > "10.2"). Order is preserved so the
+    caller can still take the last usable sample.
+    """
+    out: list[float] = []
+    for v in values:
+        try:
+            out.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def _estimate_rows(n_tags: int, start: datetime, end: datetime, bucket: str) -> int:
     """Upper bound on inline objects: n_tags × number of buckets in the range."""
     span = (end - start).total_seconds()
@@ -490,6 +509,13 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         clamped to the most recent 1 day of the requested end_time and the
         result reports adjusted=true.
 
+        Each tag's summary (max/min/latest) is computed over numerically
+        usable samples only: the historian stores values as text, so NULL and
+        non-numeric readings ('OFF', 'BAD', ...) are skipped, and "latest" is
+        the most recent usable sample. A window with no usable sample at all
+        reports summary=null rather than a made-up number. The raw series
+        itself is returned exactly as stored, including any such readings.
+
         Set to_file=true when querying multiple tags and/or a long time
         window, especially if you plan to chart the data afterwards: instead
         of embedding every (tag, datetime, value) sample inline, the series
@@ -553,8 +579,12 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             pts = series[tag]
             summary = None
             if pts:
-                values = [p["value"] for p in pts]
-                summary = {"max": max(values), "min": min(values), "latest": pts[-1]["value"]}
+                # pts is ordered by DATETIME, so the last usable sample is the
+                # latest one. A window holding only NULL/non-numeric samples
+                # leaves summary as None rather than inventing a number.
+                values = _numeric([p["value"] for p in pts])
+                if values:
+                    summary = {"max": max(values), "min": min(values), "latest": values[-1]}
             if to_file:
                 for p in pts:
                     csv_rows.append({
