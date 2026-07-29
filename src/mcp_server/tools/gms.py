@@ -40,24 +40,48 @@ _DT_FMT = "%Y-%m-%d %H:%M:%S"
 # stored once here and reused. The per-N-minute form works because 15 divides
 # a day evenly; '1h'/'1d' use TRUNC for a lighter plan.
 _BUCKET_SQL = {
-    "15m": "TRUNC(DATETIME) + FLOOR((DATETIME - TRUNC(DATETIME)) * 1440 / 15) * 15 / 1440",
+    # DATETIME is CAST to DATE first: on a TIMESTAMP column the subtraction
+    # below yields an INTERVAL, which cannot be multiplied by 1440. CAST is a
+    # no-op when the column is already DATE, so this is safe either way. The
+    # per-N-minute form works because 15 divides a day evenly; '1h'/'1d' use
+    # TRUNC alone (which already returns DATE) for a lighter plan.
+    "15m": (
+        "TRUNC(CAST(DATETIME AS DATE))"
+        " + FLOOR((CAST(DATETIME AS DATE) - TRUNC(CAST(DATETIME AS DATE)))"
+        " * 1440 / 15) * 15 / 1440"
+    ),
     "1h": "TRUNC(DATETIME, 'HH')",
     "1d": "TRUNC(DATETIME)",
 }
 _BUCKET_SECONDS = {"15m": 900, "1h": 3600, "1d": 86400}
 
+# The historian stores VALUE as VARCHAR2 (digital and analog points share one
+# column) and it may hold NULLs and non-numeric junk ('OFF', 'BAD', ' ').
+# Aggregating the raw column is therefore wrong in two ways: AVG() raises
+# ORA-01722/ORA-00932, and MIN()/MAX() silently compare lexicographically
+# ("9.5" > "10.2"). Every aggregate runs on this converted expression instead;
+# non-numeric rows become NULL and SQL aggregates skip NULLs, so a junk sample
+# is excluded rather than blowing up the whole bucket. A bucket with no usable
+# sample correctly yields NULL.
+#
+# DEFAULT NULL ON CONVERSION ERROR requires Oracle 12.2+. On 11g, swap in:
+#   "CASE WHEN REGEXP_LIKE(VALUE, '^\\s*[+-]?\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\s*$')
+#         THEN TO_NUMBER(VALUE) END"
+_NUM = "TO_NUMBER(VALUE DEFAULT NULL ON CONVERSION ERROR)"
+
 # How to collapse the raw samples inside one bucket. 'last'/'first' need the
-# VALUE of the newest/oldest row in the bucket — that's the KEEP ... DENSE_RANK
+# value of the newest/oldest row in the bucket — that's the KEEP ... DENSE_RANK
 # idiom, done inside the same GROUP BY (a plain MAX would give the largest
-# value, not the last-in-time one). All keys are a fixed whitelist, so they are
-# safe to interpolate into SQL directly.
+# value, not the last-in-time one). 'count' counts usable numeric samples, not
+# raw rows, so it reports how much of the bucket is actually analysable. All
+# keys are a fixed whitelist, so they are safe to interpolate into SQL directly.
 _AGG_SQL = {
-    "avg": "AVG(VALUE)",
-    "min": "MIN(VALUE)",
-    "max": "MAX(VALUE)",
-    "last": "MAX(VALUE) KEEP (DENSE_RANK LAST ORDER BY DATETIME)",
-    "first": "MAX(VALUE) KEEP (DENSE_RANK FIRST ORDER BY DATETIME)",
-    "count": "COUNT(*)",
+    "avg": f"AVG({_NUM})",
+    "min": f"MIN({_NUM})",
+    "max": f"MAX({_NUM})",
+    "last": f"MAX({_NUM}) KEEP (DENSE_RANK LAST ORDER BY DATETIME)",
+    "first": f"MAX({_NUM}) KEEP (DENSE_RANK FIRST ORDER BY DATETIME)",
+    "count": f"COUNT({_NUM})",
 }
 _DEFAULT_AGGS = ["avg"]
 
@@ -614,7 +638,12 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                         from 'avg' / 'min' / 'max' / 'last' / 'first' / 'count'
                         (each becomes a column in every bucket). 'last'/'first'
                         are the newest/oldest value in the bucket by time, not
-                        the largest/smallest. Default ['avg'].
+                        the largest/smallest. 'count' is the number of usable
+                        numeric samples in the bucket — the historian stores
+                        values as text, so NULL and non-numeric samples
+                        ('OFF', 'BAD', ...) are skipped; add 'count' to see how
+                        much of each bucket was actually usable. A bucket with
+                        no usable sample returns null. Default ['avg'].
             to_file:    Write the buckets to a CSV instead of embedding them
                         (columns: tag_name, point_name, phase, unit, time, then
                         one column per agg). Required for large results — an
