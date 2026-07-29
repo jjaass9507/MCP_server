@@ -106,7 +106,35 @@ def test_cleanup_old_exports_ignores_non_matching_extensions(tmp_path):
 
     export_utils.cleanup_old_exports(tmp_path)
 
-    assert other.exists()  # only *.csv is cleaned up
+    assert other.exists()  # only *.csv/*.json are cleaned up
+
+
+def test_cleanup_old_exports_deletes_old_json_keeps_new(tmp_path):
+    old_file = tmp_path / "old.json"
+    new_file = tmp_path / "new.json"
+    old_file.write_text("{}")
+    new_file.write_text("{}")
+
+    eight_days_ago = time.time() - 8 * 86400
+    os.utime(old_file, (eight_days_ago, eight_days_ago))
+
+    export_utils.cleanup_old_exports(tmp_path)
+
+    assert not old_file.exists()
+    assert new_file.exists()
+
+
+# ── export_utils.write_json ──────────────────────────────────────────────────
+
+def test_write_json_uses_utf8_no_bom_and_chinese_content(tmp_path):
+    path = tmp_path / "out.json"
+    export_utils.write_json(path, {"name": "溫度", "value": 25.5})
+    raw = path.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")  # no BOM, unlike write_csv
+    import json as _json
+
+    parsed = _json.loads(path.read_text(encoding="utf-8"))
+    assert parsed == {"name": "溫度", "value": 25.5}
 
 
 # ── db_query_to_file ─────────────────────────────────────────────────────
@@ -268,3 +296,192 @@ def test_gms_history_values_to_file_true_omits_series_includes_file(gms_mcp, mon
         rows = list(csv.DictReader(f))
     assert len(rows) == 3
     assert {r["tag_name"] for r in rows} == {"K18_GMS_A1_PRESSURE", "K18_GMS_A1_TEMP"}
+
+
+def test_gms_history_values_format_json_matches_inline_shape(gms_mcp, monkeypatch, tmp_path):
+    """The JSON file's content must equal the to_file=false response
+    structure exactly (same points, series, summary) for the same inputs."""
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+    monkeypatch.setattr(cfg, "get_export_dir", lambda: export_dir)
+
+    gms_history_values = _get_tool(gms_mcp, "gms_history_values")
+    import json
+
+    kwargs = dict(
+        building="K18",
+        start_time="2026-07-03 00:00:00",
+        end_time="2026-07-03 23:59:59",
+        tag_names=["K18_GMS_A1_PRESSURE", "K18_GMS_A1_TEMP"],
+    )
+    inline = json.loads(gms_history_values(**kwargs))
+    to_file_result = json.loads(gms_history_values(**kwargs, to_file=True, format="json"))
+
+    # Tool's own response never carries the series when to_file=True.
+    assert "file" in to_file_result
+    for point in to_file_result["points"]:
+        assert "series" not in point
+        assert "summary" in point
+
+    file_info = to_file_result["file"]
+    out_path = export_dir / os.path.basename(file_info["path"])
+    assert out_path.suffix == ".json"
+    with out_path.open(encoding="utf-8") as f:
+        raw = f.read()
+    assert not raw.encode().startswith(b"\xef\xbb\xbf")  # no BOM
+    file_content = json.loads(raw)
+
+    assert file_content == inline
+    assert file_info["row_count"] == 3
+
+
+def test_gms_history_values_format_csv_default_unchanged(gms_mcp, monkeypatch, tmp_path):
+    """Default format (no format passed) behaves identically to before."""
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+    monkeypatch.setattr(cfg, "get_export_dir", lambda: export_dir)
+
+    gms_history_values = _get_tool(gms_mcp, "gms_history_values")
+    import json
+
+    kwargs = dict(
+        building="K18",
+        start_time="2026-07-03 00:00:00",
+        end_time="2026-07-03 23:59:59",
+        tag_names=["K18_GMS_A1_PRESSURE", "K18_GMS_A1_TEMP"],
+        to_file=True,
+    )
+    default_result = json.loads(gms_history_values(**kwargs))
+    explicit_csv_result = json.loads(gms_history_values(**kwargs, format="csv"))
+
+    for r in (default_result, explicit_csv_result):
+        assert r["file"]["path"].endswith(".csv")
+        assert r["file"]["row_count"] == 3
+
+
+def test_gms_history_values_invalid_format_raises(gms_mcp):
+    gms_history_values = _get_tool(gms_mcp, "gms_history_values")
+    from mcp_server.utils.errors import ToolError
+
+    with pytest.raises(ToolError):
+        gms_history_values(
+            building="K18",
+            start_time="2026-07-03 00:00:00",
+            end_time="2026-07-03 23:59:59",
+            tag_names=["K18_GMS_A1_PRESSURE"],
+            to_file=True,
+            format="xml",
+        )
+
+
+def test_gms_history_values_invalid_format_ignored_when_not_to_file(gms_mcp):
+    """format is only meaningful when to_file=true; otherwise it's ignored,
+    not validated."""
+    gms_history_values = _get_tool(gms_mcp, "gms_history_values")
+    import json
+
+    raw = gms_history_values(
+        building="K18",
+        start_time="2026-07-03 00:00:00",
+        end_time="2026-07-03 23:59:59",
+        tag_names=["K18_GMS_A1_PRESSURE"],
+        format="xml",
+    )
+    result = json.loads(raw)
+    assert "file" not in result
+
+
+# ── gms_history_aggregate(to_file=...) ──────────────────────────────────────
+
+_FAKE_AGG_ROWS = [
+    {"TAGNAME": "K18_GMS_A1_PRESSURE", "BUCKET_TIME": datetime(2026, 7, 3, 12, 0, 0), "AGG_AVG": 1.15},
+    {"TAGNAME": "K18_GMS_A1_PRESSURE", "BUCKET_TIME": datetime(2026, 7, 3, 13, 0, 0), "AGG_AVG": 1.3},
+    {"TAGNAME": "K18_GMS_A1_TEMP", "BUCKET_TIME": datetime(2026, 7, 3, 12, 0, 0), "AGG_AVG": 30.0},
+]
+
+
+@pytest.fixture
+def gms_agg_mcp(monkeypatch):
+    monkeypatch.setattr(cfg, "resolve_db", lambda name: "dummy-dsn")
+    monkeypatch.setattr(gms, "_fetch_points_by_tags", lambda cfg, building, tag_names: _FAKE_POINTS)
+    monkeypatch.setattr(
+        gms, "_oracle_aggregate",
+        lambda cfg, dsn, table, tags, start, end, bucket, agg_list: [
+            row for row in _FAKE_AGG_ROWS if row["TAGNAME"] in tags
+        ],
+    )
+    mcp = FastMCP(name="test")
+    gms.register(mcp, cfg)
+    return mcp
+
+
+def test_gms_history_aggregate_format_json_matches_inline_shape(gms_agg_mcp, monkeypatch, tmp_path):
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+    monkeypatch.setattr(cfg, "get_export_dir", lambda: export_dir)
+
+    gms_history_aggregate = _get_tool(gms_agg_mcp, "gms_history_aggregate")
+    import json
+
+    kwargs = dict(
+        building="K18",
+        start_time="2026-07-03 00:00:00",
+        end_time="2026-07-03 23:59:59",
+        tag_names=["K18_GMS_A1_PRESSURE", "K18_GMS_A1_TEMP"],
+    )
+    inline = json.loads(gms_history_aggregate(**kwargs))
+    to_file_result = json.loads(gms_history_aggregate(**kwargs, to_file=True, format="json"))
+
+    assert "file" in to_file_result
+    for point in to_file_result["points"]:
+        assert "series" not in point
+        assert "bucket_count" in point
+
+    file_info = to_file_result["file"]
+    out_path = export_dir / os.path.basename(file_info["path"])
+    assert out_path.suffix == ".json"
+    file_content = json.loads(out_path.read_text(encoding="utf-8"))
+
+    assert file_content == inline
+    # Per-agg keys ("avg") must be present in each bucket of the file.
+    pressure = next(p for p in file_content["points"] if p["tag_name"] == "K18_GMS_A1_PRESSURE")
+    assert pressure["series"][0]["avg"] == 1.15
+    assert file_info["row_count"] == 3
+
+
+def test_gms_history_aggregate_format_csv_default_unchanged(gms_agg_mcp, monkeypatch, tmp_path):
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+    monkeypatch.setattr(cfg, "get_export_dir", lambda: export_dir)
+
+    gms_history_aggregate = _get_tool(gms_agg_mcp, "gms_history_aggregate")
+    import json
+
+    kwargs = dict(
+        building="K18",
+        start_time="2026-07-03 00:00:00",
+        end_time="2026-07-03 23:59:59",
+        tag_names=["K18_GMS_A1_PRESSURE", "K18_GMS_A1_TEMP"],
+        to_file=True,
+    )
+    default_result = json.loads(gms_history_aggregate(**kwargs))
+    explicit_csv_result = json.loads(gms_history_aggregate(**kwargs, format="csv"))
+
+    for r in (default_result, explicit_csv_result):
+        assert r["file"]["path"].endswith(".csv")
+        assert r["file"]["row_count"] == 3
+
+
+def test_gms_history_aggregate_invalid_format_raises(gms_agg_mcp):
+    gms_history_aggregate = _get_tool(gms_agg_mcp, "gms_history_aggregate")
+    from mcp_server.utils.errors import ToolError
+
+    with pytest.raises(ToolError):
+        gms_history_aggregate(
+            building="K18",
+            start_time="2026-07-03 00:00:00",
+            end_time="2026-07-03 23:59:59",
+            tag_names=["K18_GMS_A1_PRESSURE"],
+            to_file=True,
+            format="xml",
+        )

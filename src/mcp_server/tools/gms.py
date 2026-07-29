@@ -498,6 +498,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         end_time: str = "",
         tag_names: list[str] = [],
         to_file: bool = False,
+        format: str = "csv",
     ) -> str:
         """Get a historical value series for a list of already-known tags (Mode E).
 
@@ -519,21 +520,37 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         Set to_file=true when querying multiple tags and/or a long time
         window, especially if you plan to chart the data afterwards: instead
         of embedding every (tag, datetime, value) sample inline, the series
-        is written to one CSV file (columns: tag_name, point_name, phase,
-        unit, datetime, value — all tags combined) under the server's export
-        directory, and the response keeps only adjusted/start_time/end_time,
-        each tag's point_name/phase/unit/tag_name/summary, and the file info.
-        Do NOT read_file() that CSV back into context — pass its path to a
-        downstream file-processing tool or external workflow instead. With
+        is written to one file under the server's export directory, and the
+        response keeps only adjusted/start_time/end_time, each tag's
+        point_name/phase/unit/tag_name/summary, and the file info. With
         to_file=false (default) behavior is unchanged: series stays embedded
         per tag.
 
+        format controls the file's shape and only matters when to_file=true
+        (ignored otherwise):
+        - "csv" (default): one CSV, columns tag_name, point_name, phase,
+          unit, datetime, value — all tags combined, repeated per row.
+        - "json": one JSON file whose content is structurally identical to
+          this tool's to_file=false response — i.e.
+          {"adjusted", "start_time", "end_time",
+           "points": [{"point_name", "phase", "unit", "tag_name",
+                       "series": [{"value", "datetime"}, ...], "summary"}]} —
+          so a caller that already handles the inline shape can parse the
+          file the same way, without re-grouping flat rows by tag.
+        Do NOT read_file() that CSV/JSON back into context — pass its path
+        to a downstream file-processing tool or external workflow instead.
+        This applies to JSON just as much as CSV: the JSON looks directly
+        readable, but pulling the whole file into context defeats the point
+        of writing it to a file in the first place — the series data must
+        never come back through this tool's own response either way.
+
         If [export] serve_downloads is enabled in config.toml, result.file
         also includes "download_url": a time-limited (default 60 minutes),
-        unguessable HTTP URL for this CSV, meant to be handed to a
+        unguessable HTTP URL for this file, meant to be handed to a
         *different* machine's MCP server so it can stream the file over
         HTTP instead of needing local filesystem access to this machine.
-        Do NOT GET that URL yourself to pull the contents back into context.
+        Do NOT GET that URL yourself to pull the contents back into
+        context — not even to "just check" the JSON.
 
         Args:
             building:   Building code, e.g. 'K18'. Required — used to resolve
@@ -542,11 +559,15 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             end_time:   Range end, 'YYYY-MM-DD HH:MM:SS'. Required.
             tag_names:  Exact SCADA tag names to fetch, e.g. from a prior
                         gms_list_points call. Required.
-            to_file:    Write the series to a CSV file instead of embedding
-                        it in the response (see above). Default: False.
+            to_file:    Write the series to a file instead of embedding it
+                        in the response (see above). Default: False.
+            format:     "csv" or "json"; only meaningful when to_file=true
+                        (see above). Default: "csv".
         """
         if not building or not start_time or not end_time or not tag_names:
             raise ToolError("請提供 building、start_time、end_time、tag_names（請先呼叫 gms_list_points 取得確切的 tag_name）。")
+        if to_file and format not in ("csv", "json"):
+            raise ToolError(f"不支援的 format '{format}'，可用：csv, json。")
         start_dt = _parse_dt(start_time, "start_time")
         end_dt = _parse_dt(end_time, "end_time")
         if start_dt > end_dt:
@@ -574,6 +595,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     series[row["TAGNAME"]].append({"value": row["VALUE"], "datetime": row["DATETIME"]})
 
         points_out = []
+        points_out_full: list[dict] = []  # only built when to_file and format=="json"
         csv_rows: list[dict] = []
         for tag, meta in by_tag.items():
             pts = series[tag]
@@ -586,15 +608,27 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 if values:
                     summary = {"max": max(values), "min": min(values), "latest": values[-1]}
             if to_file:
-                for p in pts:
-                    csv_rows.append({
-                        "tag_name": tag,
-                        "point_name": meta["point_name"],
-                        "phase": meta["phase"],
-                        "unit": meta["unit"],
-                        "datetime": p["datetime"],
-                        "value": p["value"],
-                    })
+                if format == "json":
+                    points_out_full.append(
+                        {
+                            "point_name": meta["point_name"],
+                            "phase": meta["phase"],
+                            "unit": meta["unit"],
+                            "tag_name": tag,
+                            "series": pts,
+                            "summary": summary,
+                        }
+                    )
+                else:
+                    for p in pts:
+                        csv_rows.append({
+                            "tag_name": tag,
+                            "point_name": meta["point_name"],
+                            "phase": meta["phase"],
+                            "unit": meta["unit"],
+                            "datetime": p["datetime"],
+                            "value": p["value"],
+                        })
                 points_out.append(
                     {
                         "point_name": meta["point_name"],
@@ -624,11 +658,22 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         }
         if to_file:
             export_dir = cfg.get_export_dir()
-            columns = ["tag_name", "point_name", "phase", "unit", "datetime", "value"]
-            path = export_utils.export_csv(export_dir, columns, csv_rows)
+            if format == "json":
+                file_payload = {
+                    "adjusted": adjusted,
+                    "start_time": start_dt.strftime(_DT_FMT),
+                    "end_time": end_dt.strftime(_DT_FMT),
+                    "points": points_out_full,
+                }
+                path = export_utils.export_json(export_dir, file_payload)
+                row_count = sum(len(p["series"]) for p in points_out_full)
+            else:
+                columns = ["tag_name", "point_name", "phase", "unit", "datetime", "value"]
+                path = export_utils.export_csv(export_dir, columns, csv_rows)
+                row_count = len(csv_rows)
             result["file"] = {
                 "path": str(path),
-                "row_count": len(csv_rows),
+                "row_count": row_count,
                 "size_kb": round(path.stat().st_size / 1024, 2),
             }
             if cfg.get_download_config()["serve_downloads"]:
@@ -644,6 +689,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         bucket: str = "1h",
         aggs: list[str] = [],
         to_file: bool = False,
+        format: str = "csv",
     ) -> str:
         """Get a downsampled historical series for long-range analysis (Mode F).
 
@@ -674,17 +720,30 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                         ('OFF', 'BAD', ...) are skipped; add 'count' to see how
                         much of each bucket was actually usable. A bucket with
                         no usable sample returns null. Default ['avg'].
-            to_file:    Write the buckets to a CSV instead of embedding them
-                        (columns: tag_name, point_name, phase, unit, time, then
-                        one column per agg). Required for large results — an
+            to_file:    Write the buckets to a file instead of embedding them
+                        in the response. Required for large results — an
                         inline request estimated to exceed a few thousand
                         (tag × bucket) rows is refused with a hint to set this
-                        True or use a coarser bucket. Do NOT read that CSV back
-                        into context; hand its path/download_url downstream.
-                        Default False.
+                        True or use a coarser bucket. Default False.
+            format:     "csv" (default) or "json"; only meaningful when
+                        to_file=true (ignored otherwise).
+                        - "csv": columns tag_name, point_name, phase, unit,
+                          time, then one column per agg.
+                        - "json": one JSON file whose content is structurally
+                          identical to this tool's to_file=false response —
+                          i.e. {"bucket", "aggs", "start_time", "end_time",
+                          "points": [{"point_name", "phase", "unit",
+                          "tag_name", "series": [{"time", <agg>: ...}, ...]}]}.
+                        Do NOT read that CSV/JSON back into context — hand its
+                        path/download_url downstream instead. This applies to
+                        JSON just as much as CSV: it looks directly readable,
+                        but pulling the whole file into context defeats the
+                        point of writing it to a file in the first place.
         """
         if not building or not start_time or not end_time or not tag_names:
             raise ToolError("請提供 building、start_time、end_time、tag_names（請先呼叫 gms_list_points 取得確切的 tag_name）。")
+        if to_file and format not in ("csv", "json"):
+            raise ToolError(f"不支援的 format '{format}'，可用：csv, json。")
         start_dt = _parse_dt(start_time, "start_time")
         end_dt = _parse_dt(end_time, "end_time")
         if start_dt > end_dt:
@@ -720,19 +779,31 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     series[row["TAGNAME"]].append(point)
 
         points_out = []
+        points_out_full: list[dict] = []  # only built when to_file and format=="json"
         csv_rows: list[dict] = []
         for tag, meta in by_tag.items():
             buckets = series[tag]
             if to_file:
-                for b in buckets:
-                    csv_rows.append({
-                        "tag_name": tag,
-                        "point_name": meta["point_name"],
-                        "phase": meta["phase"],
-                        "unit": meta["unit"],
-                        "time": b["time"],
-                        **{a: b[a] for a in agg_list},
-                    })
+                if format == "json":
+                    points_out_full.append(
+                        {
+                            "point_name": meta["point_name"],
+                            "phase": meta["phase"],
+                            "unit": meta["unit"],
+                            "tag_name": tag,
+                            "series": buckets,
+                        }
+                    )
+                else:
+                    for b in buckets:
+                        csv_rows.append({
+                            "tag_name": tag,
+                            "point_name": meta["point_name"],
+                            "phase": meta["phase"],
+                            "unit": meta["unit"],
+                            "time": b["time"],
+                            **{a: b[a] for a in agg_list},
+                        })
                 points_out.append(
                     {
                         "point_name": meta["point_name"],
@@ -762,11 +833,23 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         }
         if to_file:
             export_dir = cfg.get_export_dir()
-            columns = ["tag_name", "point_name", "phase", "unit", "time", *agg_list]
-            path = export_utils.export_csv(export_dir, columns, csv_rows)
+            if format == "json":
+                file_payload = {
+                    "bucket": bucket,
+                    "aggs": agg_list,
+                    "start_time": start_dt.strftime(_DT_FMT),
+                    "end_time": end_dt.strftime(_DT_FMT),
+                    "points": points_out_full,
+                }
+                path = export_utils.export_json(export_dir, file_payload)
+                row_count = sum(len(p["series"]) for p in points_out_full)
+            else:
+                columns = ["tag_name", "point_name", "phase", "unit", "time", *agg_list]
+                path = export_utils.export_csv(export_dir, columns, csv_rows)
+                row_count = len(csv_rows)
             result["file"] = {
                 "path": str(path),
-                "row_count": len(csv_rows),
+                "row_count": row_count,
                 "size_kb": round(path.stat().st_size / 1024, 2),
             }
             if cfg.get_download_config()["serve_downloads"]:

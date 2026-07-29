@@ -77,9 +77,14 @@ class _DownloadHandler(http.server.BaseHTTPRequestHandler):
         try:
             size = path.stat().st_size
             self.send_response(200)
-            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            if path.suffix.lower() == ".json":
+                # No Content-Disposition: the consumer fetches this inline
+                # (e.g. response.json()), not as a browser download.
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+            else:
+                self.send_header("Content-Type", "text/csv; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
             self.send_header("Content-Length", str(size))
-            self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
             self.end_headers()
             with path.open("rb") as f:
                 shutil.copyfileobj(f, self.wfile)

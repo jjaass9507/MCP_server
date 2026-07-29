@@ -5,6 +5,7 @@ Used by database.db_query_to_file and gms.gms_history_values(to_file=True).
 """
 
 import csv
+import json
 import pathlib
 import re
 import secrets
@@ -48,18 +49,19 @@ def sanitize_filename(filename: str, ext: str) -> str:
 
 
 def cleanup_old_exports(export_dir: pathlib.Path, max_age_days: int = _MAX_AGE_DAYS) -> None:
-    """Delete *.csv files in export_dir older than max_age_days.
+    """Delete *.csv/*.json files in export_dir older than max_age_days.
 
     Best-effort: a file that fails to delete (e.g. open elsewhere) is left
     in place and silently skipped.
     """
     cutoff = time.time() - max_age_days * 86400
-    for f in export_dir.glob("*.csv"):
-        try:
-            if f.is_file() and f.stat().st_mtime < cutoff:
-                f.unlink()
-        except OSError:
-            pass
+    for pattern in ("*.csv", "*.json"):
+        for f in export_dir.glob(pattern):
+            try:
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
 
 
 def write_csv(path: pathlib.Path, columns: list[str], rows: list[dict]) -> None:
@@ -88,4 +90,30 @@ def export_csv(
     cleanup_old_exports(export_dir)
     path = export_dir / sanitize_filename(filename, "csv")
     write_csv(path, columns, rows)
+    return path
+
+
+def write_json(path: pathlib.Path, payload) -> None:
+    """Write payload to path as JSON, encoded utf-8 (no BOM).
+
+    utf-8 (not utf-8-sig) so json.loads()/response.json() on the consuming
+    side works directly; matches json.dumps(..., ensure_ascii=False,
+    default=str) used elsewhere in this codebase.
+    """
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, default=str)
+
+
+def export_json(
+    export_dir: pathlib.Path,
+    payload,
+    filename: str = "",
+) -> pathlib.Path:
+    """Clean up stale exports, then write payload as JSON in export_dir.
+
+    Returns the path to the written file.
+    """
+    cleanup_old_exports(export_dir)
+    path = export_dir / sanitize_filename(filename, "json")
+    write_json(path, payload)
     return path

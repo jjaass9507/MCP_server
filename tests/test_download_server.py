@@ -84,6 +84,21 @@ def test_register_and_get_success(running_server, tmp_path):
     assert resp.headers["content-length"] == str(len(csv_bytes))
 
 
+def test_register_and_get_json_success(running_server, tmp_path):
+    json_path = tmp_path / "out.json"
+    json_bytes = '{"name": "溫度", "value": 25.5}'.encode("utf-8")
+    json_path.write_bytes(json_bytes)
+
+    url = download_server.register_file(json_path)
+    resp = httpx.get(url)
+
+    assert resp.status_code == 200
+    assert resp.content == json_bytes
+    assert resp.headers["content-type"] == "application/json; charset=utf-8"
+    assert "content-disposition" not in resp.headers
+    assert resp.headers["content-length"] == str(len(json_bytes))
+
+
 def test_register_file_url_shape(running_server, tmp_path):
     csv_path = tmp_path / "a.csv"
     csv_path.write_text("x", encoding="utf-8")
