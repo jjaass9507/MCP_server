@@ -1,8 +1,10 @@
 import contextlib
 import json
+import queue
 import sqlite3
+import threading
 import urllib.parse
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from mcp.server.fastmcp import FastMCP
 
@@ -16,6 +18,60 @@ if TYPE_CHECKING:
 logger = get_logger("database")
 
 
+# ── connection pooling (PostgreSQL / SQL Server / Oracle) ──────────────────────
+#
+# Each tool call used to open and close its own connection. Under concurrent
+# use that means every simultaneous query opens a brand-new connection to the
+# target database, which can exceed its max_connections limit. Instead, keep
+# a small bounded pool of live connections per DSN: callers reuse an idle
+# connection when one is available, open a new one up to the configured cap,
+# and block until one frees up beyond that — capping concurrent connections
+# instead of every request spawning its own.
+
+class _ConnPool:
+    def __init__(self, connect: Callable[[], Any], max_size: int):
+        self._connect = connect
+        self._max_size = max_size
+        self._idle: queue.Queue = queue.Queue()
+        self._created = 0
+        self._lock = threading.Lock()
+
+    def acquire(self) -> Any:
+        try:
+            return self._idle.get_nowait()
+        except queue.Empty:
+            pass
+        with self._lock:
+            if self._created < self._max_size:
+                self._created += 1
+                return self._connect()
+        return self._idle.get()
+
+    def release(self, conn: Any, healthy: bool) -> None:
+        if healthy:
+            self._idle.put(conn)
+            return
+        with self._lock:
+            self._created -= 1
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+_pools_lock = threading.Lock()
+_pools: dict[str, _ConnPool] = {}
+
+
+def _get_pool(dsn: str, connect: Callable[[], Any], max_size: int) -> _ConnPool:
+    with _pools_lock:
+        pool = _pools.get(dsn)
+        if pool is None:
+            pool = _ConnPool(connect, max_size)
+            _pools[dsn] = pool
+        return pool
+
+
 # ── connection context managers ───────────────────────────────────────────────
 
 @contextlib.contextmanager
@@ -24,6 +80,10 @@ def _sqlite_conn(db_path: str):
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
+        # WAL allows concurrent readers, but a concurrent writer still has to
+        # wait for the write lock. Without this, sqlite3's default is to fail
+        # with "database is locked" after 5s instead of waiting longer.
+        conn.execute("PRAGMA busy_timeout=30000")
         yield conn
         conn.commit()
     except sqlite3.Error as e:
@@ -34,7 +94,7 @@ def _sqlite_conn(db_path: str):
 
 
 @contextlib.contextmanager
-def _pg_conn(dsn: str):
+def _pg_conn(dsn: str, cfg: "_CfgModule"):
     try:
         import psycopg
     except ImportError as e:
@@ -42,13 +102,26 @@ def _pg_conn(dsn: str):
             "psycopg is not installed. "
             "Run: pip install 'psycopg[binary]'"
         ) from e
+    pool = _get_pool(
+        dsn,
+        lambda: psycopg.connect(dsn, row_factory=psycopg.rows.dict_row),
+        cfg.get_db_pool_size(),
+    )
+    conn = None
+    healthy = False
     try:
-        with psycopg.connect(dsn, row_factory=psycopg.rows.dict_row) as conn:
-            with conn.cursor() as cur:
-                yield cur
-                conn.commit()
+        conn = pool.acquire()
+        with conn.cursor() as cur:
+            yield cur
+        conn.commit()
+        healthy = True
     except psycopg.Error as e:
+        if conn is not None:
+            conn.rollback()
         raise ToolError(f"Database error: {e}") from e
+    finally:
+        if conn is not None:
+            pool.release(conn, healthy)
 
 
 def _parse_mssql_dsn(dsn: str) -> dict[str, Any]:
@@ -69,7 +142,7 @@ def _parse_mssql_dsn(dsn: str) -> dict[str, Any]:
 
 
 @contextlib.contextmanager
-def _mssql_conn(dsn: str):
+def _mssql_conn(dsn: str, cfg: "_CfgModule"):
     try:
         import pymssql
     except ImportError as e:
@@ -77,19 +150,26 @@ def _mssql_conn(dsn: str):
             "pymssql is not installed. "
             "Run: pip install pymssql"
         ) from e
+    pool = _get_pool(
+        dsn,
+        lambda: pymssql.connect(**_parse_mssql_dsn(dsn)),
+        cfg.get_db_pool_size(),
+    )
     conn = None
+    healthy = False
     try:
-        conn = pymssql.connect(**_parse_mssql_dsn(dsn))
+        conn = pool.acquire()
         cur = conn.cursor(as_dict=True)
         yield cur
         conn.commit()
+        healthy = True
     except pymssql.Error as e:
         if conn is not None:
             conn.rollback()
         raise ToolError(f"Database error: {e}") from e
     finally:
         if conn is not None:
-            conn.close()
+            pool.release(conn, healthy)
 
 
 def _parse_oracle_dsn(dsn: str) -> dict[str, Any]:
@@ -109,7 +189,7 @@ def _parse_oracle_dsn(dsn: str) -> dict[str, Any]:
 
 
 @contextlib.contextmanager
-def _oracle_conn(dsn: str):
+def _oracle_conn(dsn: str, cfg: "_CfgModule"):
     try:
         import oracledb
     except ImportError as e:
@@ -117,29 +197,36 @@ def _oracle_conn(dsn: str):
             "oracledb is not installed. "
             "Run: pip install oracledb"
         ) from e
+    pool = _get_pool(
+        dsn,
+        lambda: oracledb.connect(**_parse_oracle_dsn(dsn)),
+        cfg.get_db_pool_size(),
+    )
     conn = None
+    healthy = False
     try:
-        conn = oracledb.connect(**_parse_oracle_dsn(dsn))
+        conn = pool.acquire()
         with conn.cursor() as cur:
             yield cur
+        healthy = True
     except oracledb.Error as e:
         raise ToolError(f"Database error: {e}") from e
     finally:
         if conn is not None:
-            conn.close()
+            pool.release(conn, healthy)
 
 
 @contextlib.contextmanager
 def _get_conn(dsn: str, cfg: "_CfgModule"):
     """Yield a unified cursor-like object for SQLite, PostgreSQL, SQL Server or Oracle."""
     if cfg.is_postgres(dsn):
-        with _pg_conn(dsn) as cur:
+        with _pg_conn(dsn, cfg) as cur:
             yield cur
     elif cfg.is_mssql(dsn):
-        with _mssql_conn(dsn) as cur:
+        with _mssql_conn(dsn, cfg) as cur:
             yield cur
     elif cfg.is_oracle(dsn):
-        with _oracle_conn(dsn) as cur:
+        with _oracle_conn(dsn, cfg) as cur:
             yield cur
     else:
         with _sqlite_conn(dsn) as conn:
@@ -556,10 +643,10 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             raise ToolError("Oracle connections are read-only in this server. Use db_query for SELECT.")
         try:
             if cfg.is_postgres(dsn):
-                with _pg_conn(dsn) as cur:
+                with _pg_conn(dsn, cfg) as cur:
                     cur.execute(script)
             elif cfg.is_mssql(dsn):
-                with _mssql_conn(dsn) as cur:
+                with _mssql_conn(dsn, cfg) as cur:
                     cur.execute(script)
             else:
                 conn = sqlite3.connect(dsn)
