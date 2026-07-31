@@ -36,7 +36,7 @@ class _ConnPool:
         self._created = 0
         self._lock = threading.Lock()
 
-    def acquire(self) -> Any:
+    def acquire(self, timeout: float = 30.0) -> Any:
         try:
             return self._idle.get_nowait()
         except queue.Empty:
@@ -45,7 +45,14 @@ class _ConnPool:
             if self._created < self._max_size:
                 self._created += 1
                 return self._connect()
-        return self._idle.get()
+        try:
+            return self._idle.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutError(
+                f"No database connection freed up within {timeout:g}s "
+                f"(pool exhausted at {self._max_size} concurrent connections). "
+                "Increase database.pool_size in config.toml if this is expected load."
+            ) from None
 
     def release(self, conn: Any, healthy: bool) -> None:
         if healthy:
@@ -119,6 +126,8 @@ def _pg_conn(dsn: str, cfg: "_CfgModule"):
         if conn is not None:
             conn.rollback()
         raise ToolError(f"Database error: {e}") from e
+    except TimeoutError as e:
+        raise ToolError(str(e)) from e
     finally:
         if conn is not None:
             pool.release(conn, healthy)
@@ -167,6 +176,8 @@ def _mssql_conn(dsn: str, cfg: "_CfgModule"):
         if conn is not None:
             conn.rollback()
         raise ToolError(f"Database error: {e}") from e
+    except TimeoutError as e:
+        raise ToolError(str(e)) from e
     finally:
         if conn is not None:
             pool.release(conn, healthy)
@@ -211,6 +222,8 @@ def _oracle_conn(dsn: str, cfg: "_CfgModule"):
         healthy = True
     except oracledb.Error as e:
         raise ToolError(f"Database error: {e}") from e
+    except TimeoutError as e:
+        raise ToolError(str(e)) from e
     finally:
         if conn is not None:
             pool.release(conn, healthy)
