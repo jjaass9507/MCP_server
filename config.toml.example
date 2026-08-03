@@ -46,6 +46,12 @@ analytics = "/home/user/data/analytics.sqlite"
 # Uses the service name (not SID) after the slash. Query binds use :1 / :name.
 # ora      = "oracle://scott:tiger@db:1521/XEPDB1"
 
+# Max concurrent connections kept open per PostgreSQL/SQL Server/Oracle DSN.
+# Requests beyond this wait for one to free up instead of opening a new
+# connection, so concurrent tool calls can't exceed the target database's
+# max_connections limit. SQLite is unaffected (always a direct file connection).
+# pool_size = 5
+
 [export]
 # Directory used by db_query_to_file and gms_history_values(to_file=true) to
 # write large results (CSV) instead of returning them inline to the model.

@@ -130,6 +130,15 @@ def check_path(p: pathlib.Path, write: bool = False) -> None:
 _db_connections: dict[str, str] = (
     _config.get("database", {}).get("connections", {})
 )
+_db_pool_size: int = _config.get("database", {}).get("pool_size", 5)
+
+
+def get_db_pool_size() -> int:
+    """Return the max concurrent connections kept per PostgreSQL/SQL Server/Oracle DSN.
+
+    SQLite is exempt — it always connects directly to a local file.
+    """
+    return _db_pool_size
 
 
 def resolve_db(name: str) -> str:
@@ -255,6 +264,10 @@ def validate_config() -> list[str]:
 
     # Database: validate the shape of each connection string. SQLite paths must
     # have an existing parent directory; PostgreSQL DSNs are well-formed enough.
+    if not isinstance(_db_pool_size, int) or _db_pool_size < 1:
+        errors.append(
+            f"database.pool_size must be a positive integer, got {_db_pool_size!r}."
+        )
     for name, dsn in _db_connections.items():
         if not isinstance(dsn, str) or not dsn.strip():
             errors.append(f"database.connections['{name}'] is empty or not a string")
