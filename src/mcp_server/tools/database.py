@@ -1,6 +1,7 @@
 import contextlib
 import json
 import queue
+import re
 import sqlite3
 import threading
 import urllib.parse
@@ -44,7 +45,11 @@ class _ConnPool:
         with self._lock:
             if self._created < self._max_size:
                 self._created += 1
-                return self._connect()
+                try:
+                    return self._connect()
+                except Exception:
+                    self._created -= 1
+                    raise
         try:
             return self._idle.get(timeout=timeout)
         except queue.Empty:
@@ -83,6 +88,7 @@ def _get_pool(dsn: str, connect: Callable[[], Any], max_size: int) -> _ConnPool:
 
 @contextlib.contextmanager
 def _sqlite_conn(db_path: str):
+    conn = None
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -94,10 +100,12 @@ def _sqlite_conn(db_path: str):
         yield conn
         conn.commit()
     except sqlite3.Error as e:
-        conn.rollback()
+        if conn is not None:
+            conn.rollback()
         raise ToolError(f"Database error: {e}") from e
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 @contextlib.contextmanager
@@ -265,6 +273,23 @@ def run_select(dsn: str, cfg: "_CfgModule", sql: str, params: Any = None) -> lis
             return [dict(row) for row in cursor.fetchall()]
 
 
+def _write_operation(sql: str) -> str:
+    """Return an allowed single-statement write verb or raise ToolError."""
+    statement = sql.strip()
+    if statement.endswith(";"):
+        statement = statement[:-1].rstrip()
+    if ";" in statement:
+        raise ToolError(
+            "db_execute accepts exactly one statement. Use db_execute_script only when "
+            "multi-statement access is explicitly enabled."
+        )
+    match = re.match(r"([A-Za-z]+)\b", statement)
+    operation = match.group(1).upper() if match else ""
+    if operation not in {"INSERT", "UPDATE", "DELETE"}:
+        raise ToolError("db_execute only accepts INSERT, UPDATE, or DELETE statements.")
+    return operation
+
+
 # ── tool registration ─────────────────────────────────────────────────────────
 
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
@@ -390,10 +415,10 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             sql:     An INSERT, UPDATE, or DELETE SQL statement.
             params:  Optional positional parameters (%s for PostgreSQL/SQL Server, ? for SQLite).
         """
-        first_word = sql.strip().upper().split()[0] if sql.strip() else ""
-        if first_word == "SELECT":
-            raise ToolError("db_execute does not accept SELECT. Use db_query for reads.")
-        dsn = cfg.resolve_db(_resolve_db_name(db_name))
+        db_name = _resolve_db_name(db_name)
+        operation = _write_operation(sql)
+        cfg.check_db_write(db_name)
+        dsn = cfg.resolve_db(db_name)
         if cfg.is_oracle(dsn):
             raise ToolError("Oracle connections are read-only in this server. Use db_query for SELECT.")
         with _get_conn(dsn, cfg) as cur:
@@ -411,7 +436,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 }
             logger.info(
                 "db_execute: db=%s op=%s rows_affected=%s",
-                db_name, first_word, result["rows_affected"],
+                db_name, operation, result["rows_affected"],
             )
             return result
 
@@ -651,6 +676,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             db_name: Database name from config.toml. Use db_list_databases() to see options.
             script:  One or more SQL statements.
         """
+        cfg.check_db_write(db_name, script=True)
         dsn = cfg.resolve_db(db_name)
         if cfg.is_oracle(dsn):
             raise ToolError("Oracle connections are read-only in this server. Use db_query for SELECT.")

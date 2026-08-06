@@ -289,9 +289,8 @@ main 上的程式與行為都正確，真因是**廠內機跑的不是含修正�
 3. ✅ **已完成（2026-07-03，commit `a29ba14`）**：README Project
    Structure 與 `database.py` 過時 docstring 均已更新。
 
-4. **【效能】連線池/快取**：目前每次工具呼叫都新建 DB 連線，Oracle
-   建線特別慢，GMS 一次查詢又會多批次呼叫。可在 `database.py` 加簡單的
-   per-DSN 連線快取（注意執行緒安全與斷線重連）。
+4. ✅ **已完成（2026-08）**：PostgreSQL / MSSQL / Oracle 已使用 bounded
+   per-DSN 連線池；連線建立失敗時也會歸還 pool capacity。
 
 5. **【功能】`db_query` 的 `SELECT` 前綴檢查擋掉 CTE**：
    `WITH x AS (...) SELECT ...` 是合法唯讀查詢卻被拒。放寬時維持唯讀
@@ -307,9 +306,9 @@ main 上的程式與行為都正確，真因是**廠內機跑的不是含修正�
      `load()` + 注入。
    - GMS 的連線名 `postgreSQL_CIM` / `oracle` 寫死，可移到 config
      （移的話記得同步 config.toml.example 與廠內 config）。
-   - `custom.py` 的 `calculate` 用受限 `eval`，理論上可用 attribute
-     chain 逃逸（`(1).__class__...`）；信任環境下低風險，改 `ast`
-     求值即可根治。
+   - ✅ `custom.py` 的 `calculate` 已改為 AST 白名單 evaluator，並限制
+     expression complexity、整數大小與 exponent，避免 attribute chain
+     逃逸及明顯的資源耗用攻擊。
    - Secrets（DSN 密碼、Push+ token）明文存 config.toml——air-gapped
      環境下可接受，文件註明即可，別過度工程。
 
