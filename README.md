@@ -258,6 +258,15 @@ Logs always go to **stderr** to keep stdout clean for the stdio transport.
 Write operations (`write_file`, `delete_file`, `db_execute`, `db_execute_script`)
 are logged at INFO level for auditing.
 
+Database aliases are read-only by default. Enable writes explicitly per alias;
+script execution remains a separate opt-in:
+
+```toml
+[database.access.mydb]
+read_only = false
+allow_scripts = false
+```
+
 ## Adding New Tools
 
 **Add a tool to an existing category** — open the file in `src/mcp_server/tools/` and add inside `register()`:

@@ -131,6 +131,7 @@ _db_connections: dict[str, str] = (
     _config.get("database", {}).get("connections", {})
 )
 _db_pool_size: int = _config.get("database", {}).get("pool_size", 5)
+_db_access: dict[str, Any] = _config.get("database", {}).get("access", {})
 
 
 def get_db_pool_size() -> int:
@@ -155,6 +156,21 @@ def resolve_db(name: str) -> str:
             "Add entries under [database.connections] in config.toml."
         )
     return _db_connections[name]
+
+
+def check_db_write(name: str, *, script: bool = False) -> None:
+    """Require explicit per-alias permission for database writes."""
+    policy = _db_access.get(name, {})
+    if not isinstance(policy, dict) or policy.get("read_only", True):
+        raise ToolError(
+            f"Database '{name}' is read-only. Set read_only = false under "
+            f"[database.access.{name}] to enable INSERT/UPDATE/DELETE."
+        )
+    if script and not policy.get("allow_scripts", False):
+        raise ToolError(
+            f"SQL scripts are disabled for database '{name}'. Set allow_scripts = true "
+            f"under [database.access.{name}] only if multi-statement execution is required."
+        )
 
 
 def is_postgres(dsn: str) -> bool:
@@ -268,6 +284,25 @@ def validate_config() -> list[str]:
         errors.append(
             f"database.pool_size must be a positive integer, got {_db_pool_size!r}."
         )
+    if not isinstance(_db_access, dict):
+        errors.append("database.access must be a table keyed by database alias.")
+    else:
+        for name, policy in _db_access.items():
+            if name not in _db_connections:
+                errors.append(f"database.access contains unknown database alias '{name}'.")
+                continue
+            if not isinstance(policy, dict):
+                errors.append(f"database.access.{name} must be a table.")
+                continue
+            for option in ("read_only", "allow_scripts"):
+                if option in policy and not isinstance(policy[option], bool):
+                    errors.append(
+                        f"database.access.{name}.{option} must be true or false."
+                    )
+            if policy.get("read_only", True) and policy.get("allow_scripts", False):
+                errors.append(
+                    f"database.access.{name}.allow_scripts cannot be true when read_only is true."
+                )
     for name, dsn in _db_connections.items():
         if not isinstance(dsn, str) or not dsn.strip():
             errors.append(f"database.connections['{name}'] is empty or not a string")
