@@ -1,6 +1,9 @@
 services:
   mcp-server:
-    build: .
+    build:
+      context: .
+      args:
+        MCP_EXTRAS: ${MCP_EXTRAS:-}
     image: mcp-server:latest
     restart: unless-stopped
     ports:
@@ -13,6 +16,9 @@ services:
       - mcp-data:/data
     environment:
       MCP_LOG_LEVEL: INFO
+      # Required because the container binds beyond localhost. Set this in a
+      # local .env file or the shell before `docker compose up`.
+      MCP_HTTP_BEARER_TOKEN: ${MCP_HTTP_BEARER_TOKEN:?set MCP_HTTP_BEARER_TOKEN}
       # Uncomment to write logs to a file inside the container:
       # MCP_LOG_FILE: /data/mcp_server.log
 

@@ -9,6 +9,44 @@
 # Configuration is validated at startup: a non-existent allowed_path or a
 # database whose parent directory is missing will stop the server with an error.
 
+[tools]
+# Registration profiles reduce the tool schemas sent to the model.
+# all          = every category (backwards-compatible default)
+# core         = filesystem + database + custom + api
+# gms          = custom + gms
+# presentation = custom + presentation
+# minimal      = custom utilities only
+profile = "all"
+
+# Optional exact override for profile. Valid categories are:
+# filesystem, database, custom, api, presentation, gms
+# enabled_categories = ["database", "custom", "gms"]
+
+[http]
+# Streamable HTTP endpoint: http://host:port/mcp
+# Localhost is the secure default. A non-local bind requires the bearer-token
+# environment variable below to be set at runtime.
+host = "127.0.0.1"
+port = 8080
+
+# DNS-rebinding protection. Add the exact gateway hostname/IP used by clients
+# before binding beyond localhost, e.g. "mcp.internal.example:8080".
+allowed_hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+
+# Origin may be absent for non-browser MCP clients. Browser clients that send
+# Origin must match this list; add the exact trusted UI origin when needed.
+allowed_origins = [
+    "http://127.0.0.1:*",
+    "http://localhost:*",
+    "http://[::1]:*",
+]
+
+# The token itself is never stored in TOML. This names the environment variable
+# that supplies it. It is optional for localhost and mandatory for non-local
+# Streamable HTTP binds. Generate a strong value, e.g. `python -c "import
+# secrets; print(secrets.token_urlsafe(32))"`.
+bearer_token_env = "MCP_HTTP_BEARER_TOKEN"
+
 [filesystem]
 # Directories the server is allowed to read.
 # All paths must be absolute. Sub-paths are automatically allowed.
@@ -113,6 +151,10 @@ dir = "D:/FAC_Job/mcp_exports"
 # api_key     = "your-key-here"
 # auth_header = "Authorization"   # header name the key goes into
 # auth_prefix = "Bearer "         # prefix before the key
+# allowed_methods = ["GET"]
+# allowed_path_prefixes = ["/weather", "/forecast"]
+# timeout_seconds = 30             # maximum allowed: 120
+# max_request_body_bytes = 100000  # maximum allowed: 1000000
 #
 # X-API-Key style (X-API-Key: <key>):
 # [api.services.someservice]
@@ -128,6 +170,8 @@ dir = "D:/FAC_Job/mcp_exports"
 # Public API with no key (just omit the api_key/auth_* fields):
 # [api.services.httpbin]
 # base_url = "https://httpbin.org"
+# allowed_methods = ["GET", "POST"]
+# allowed_path_prefixes = ["/anything"]
 #
 # Push+ 2.0 notification API (token goes in the POST body — used by push_notify):
 # verify = false skips TLS certificate verification, for internal services whose

@@ -6,6 +6,7 @@ gms_history_values to_file parameter (Oracle/PostgreSQL calls monkeypatched).
 """
 
 import csv
+import contextlib
 import os
 import re
 import sqlite3
@@ -81,6 +82,19 @@ def test_write_csv_uses_utf8_sig_bom_and_chinese_content(tmp_path):
     assert "25.5" in text
 
 
+def test_export_csv_batches_removes_partial_file_on_failure(tmp_path):
+    def failing_batches():
+        yield [{"id": 1}]
+        raise RuntimeError("fetch failed")
+
+    with pytest.raises(RuntimeError, match="fetch failed"):
+        export_utils.export_csv_batches(
+            tmp_path, ["id"], failing_batches(), filename="partial"
+        )
+
+    assert list(tmp_path.glob("*.csv")) == []
+
+
 # ── export_utils.cleanup_old_exports ────────────────────────────────────────
 
 def test_cleanup_old_exports_deletes_old_keeps_new(tmp_path):
@@ -151,6 +165,54 @@ def test_db_query_to_file_full_flow(monkeypatch, tmp_path, sqlite_db):
     assert rows[0] == {"id": "0", "name": "row0"}
 
 
+def test_db_query_to_file_streams_with_fetchmany(monkeypatch, tmp_path):
+    export_dir = tmp_path / "exports"
+    export_dir.mkdir()
+
+    class StreamingCursor:
+        def __init__(self):
+            self.rows = [
+                {"id": i, "name": f"row{i}"}
+                for i in range(database._EXPORT_BATCH_SIZE + 2)
+            ]
+            self.offset = 0
+            self.fetch_sizes = []
+
+        def execute(self, sql, params):
+            return self
+
+        def fetchmany(self, size):
+            self.fetch_sizes.append(size)
+            batch = self.rows[self.offset : self.offset + size]
+            self.offset += len(batch)
+            return batch
+
+        def fetchall(self):
+            raise AssertionError("streaming export must not call fetchall()")
+
+    streaming_cursor = StreamingCursor()
+
+    @contextlib.contextmanager
+    def fake_conn(_dsn, _cfg):
+        yield streaming_cursor
+
+    monkeypatch.setattr(database, "_get_conn", fake_conn)
+    monkeypatch.setattr(cfg, "resolve_db", lambda _name: "postgres://test")
+    monkeypatch.setattr(cfg, "is_postgres", lambda _dsn: True)
+    monkeypatch.setattr(cfg, "get_export_dir", lambda: export_dir)
+
+    mcp = FastMCP(name="test")
+    database.register(mcp, cfg)
+    result = _get_tool(mcp, "db_query_to_file")(
+        db_name="mydb", sql="SELECT id, name FROM t ORDER BY id"
+    )
+
+    assert result["row_count"] == database._EXPORT_BATCH_SIZE + 2
+    assert len(result["preview"]) == 5
+    assert len(streaming_cursor.fetch_sizes) >= 3
+    assert set(streaming_cursor.fetch_sizes) == {database._EXPORT_BATCH_SIZE}
+
+
 def test_db_query_to_file_custom_filename(monkeypatch, tmp_path, sqlite_db):
     export_dir = tmp_path / "exports"
     export_dir.mkdir()
@@ -216,26 +278,38 @@ def gms_mcp(monkeypatch):
     return mcp
 
 
-def test_gms_history_values_to_file_false_unchanged_format(gms_mcp):
+def test_gms_history_values_inline_returns_bounded_page(gms_mcp):
     gms_history_values = _get_tool(gms_mcp, "gms_history_values")
-    import json
-
-    raw = gms_history_values(
+    result = gms_history_values(
         building="K18",
         start_time="2026-07-03 00:00:00",
         end_time="2026-07-03 23:59:59",
         tag_names=["K18_GMS_A1_PRESSURE", "K18_GMS_A1_TEMP"],
+        limit=2,
     )
-    result = json.loads(raw)
 
     assert "file" not in result
-    assert set(result.keys()) == {"adjusted", "start_time", "end_time", "points"}
-    for point in result["points"]:
-        assert "series" in point
-        assert "summary" in point
-    pressure = next(p for p in result["points"] if p["tag_name"] == "K18_GMS_A1_PRESSURE")
-    assert len(pressure["series"]) == 2
+    assert result["count"] == 2
+    assert result["truncated"] is True
+    assert result["next_cursor"]
+    assert [item["value"] for item in result["items"]] == [1.1, 1.2]
+    pressure = next(
+        p for p in result["summaries"]
+        if p["tag_name"] == "K18_GMS_A1_PRESSURE"
+    )
     assert pressure["summary"] == {"max": 1.2, "min": 1.1, "latest": 1.2}
+
+    second = gms_history_values(
+        building="K18",
+        start_time="2026-07-03 00:00:00",
+        end_time="2026-07-03 23:59:59",
+        tag_names=["K18_GMS_A1_PRESSURE", "K18_GMS_A1_TEMP"],
+        limit=2,
+        cursor=result["next_cursor"],
+    )
+    assert second["count"] == 1
+    assert second["truncated"] is False
+    assert second["items"][0]["value"] == 30.0
 
 
 def test_gms_history_values_to_file_true_omits_series_includes_file(gms_mcp, monkeypatch, tmp_path):
@@ -244,16 +318,13 @@ def test_gms_history_values_to_file_true_omits_series_includes_file(gms_mcp, mon
     monkeypatch.setattr(cfg, "get_export_dir", lambda: export_dir)
 
     gms_history_values = _get_tool(gms_mcp, "gms_history_values")
-    import json
-
-    raw = gms_history_values(
+    result = gms_history_values(
         building="K18",
         start_time="2026-07-03 00:00:00",
         end_time="2026-07-03 23:59:59",
         tag_names=["K18_GMS_A1_PRESSURE", "K18_GMS_A1_TEMP"],
         to_file=True,
     )
-    result = json.loads(raw)
 
     assert "file" in result
     for point in result["points"]:

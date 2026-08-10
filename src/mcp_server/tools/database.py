@@ -5,6 +5,7 @@ import re
 import sqlite3
 import threading
 import urllib.parse
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from mcp.server.fastmcp import FastMCP
@@ -12,11 +13,18 @@ from mcp.server.fastmcp import FastMCP
 from mcp_server.utils import download_server, export as export_utils
 from mcp_server.utils.errors import ToolError
 from mcp_server.utils.logging import get_logger
+from mcp_server.utils.pagination import (
+    DEFAULT_LIMIT,
+    page_from_rows,
+    paginate,
+    page_window,
+)
 
 if TYPE_CHECKING:
     import mcp_server.config as _CfgModule
 
 logger = get_logger("database")
+_EXPORT_BATCH_SIZE = 1000
 
 
 # ── connection pooling (PostgreSQL / SQL Server / Oracle) ──────────────────────
@@ -115,7 +123,7 @@ def _pg_conn(dsn: str, cfg: "_CfgModule"):
     except ImportError as e:
         raise ToolError(
             "psycopg is not installed. "
-            "Run: pip install 'psycopg[binary]'"
+            "Run: pip install 'mcp-server[postgres]'"
         ) from e
     pool = _get_pool(
         dsn,
@@ -165,7 +173,7 @@ def _mssql_conn(dsn: str, cfg: "_CfgModule"):
     except ImportError as e:
         raise ToolError(
             "pymssql is not installed. "
-            "Run: pip install pymssql"
+            "Run: pip install 'mcp-server[sqlserver]'"
         ) from e
     pool = _get_pool(
         dsn,
@@ -214,7 +222,7 @@ def _oracle_conn(dsn: str, cfg: "_CfgModule"):
     except ImportError as e:
         raise ToolError(
             "oracledb is not installed. "
-            "Run: pip install oracledb"
+            "Run: pip install 'mcp-server[oracle]'"
         ) from e
     pool = _get_pool(
         dsn,
@@ -273,6 +281,100 @@ def run_select(dsn: str, cfg: "_CfgModule", sql: str, params: Any = None) -> lis
             return [dict(row) for row in cursor.fetchall()]
 
 
+def _fetch_page(cursor: Any, offset: int, limit: int) -> list[Any]:
+    """Discard rows in bounded chunks, then retain only one bounded page."""
+    remaining = offset
+    while remaining:
+        chunk = cursor.fetchmany(min(remaining, 1000))
+        if not chunk:
+            return []
+        remaining -= len(chunk)
+    return list(cursor.fetchmany(limit + 1))
+
+
+def run_select_page(
+    dsn: str,
+    cfg: "_CfgModule",
+    sql: str,
+    params: Any = None,
+    *,
+    limit: int = DEFAULT_LIMIT,
+    cursor: str = "",
+    scope: str,
+) -> dict[str, Any]:
+    """Execute a SELECT while retaining at most ``limit + 1`` result rows."""
+    offset, limit = page_window(limit, cursor, scope)
+    with _get_conn(dsn, cfg) as cur:
+        if cfg.is_postgres(dsn) or cfg.is_mssql(dsn):
+            cur.execute(sql, params if params else None)
+            rows = _fetch_page(cur, offset, limit)
+        elif cfg.is_oracle(dsn):
+            cur.execute(sql, params if params else [])
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, row)) for row in _fetch_page(cur, offset, limit)]
+        else:
+            db_cursor = cur.execute(sql, params if params else [])
+            rows = [dict(row) for row in _fetch_page(db_cursor, offset, limit)]
+    return page_from_rows(rows, offset, limit, scope)
+
+
+def _execute_select_cursor(
+    dsn: str, cfg: "_CfgModule", cursor_or_conn: Any, sql: str, params: Any
+) -> tuple[Any, Callable[[Any], dict[str, Any]]]:
+    """Execute a SELECT and return its cursor plus a row-to-dict converter."""
+    if cfg.is_postgres(dsn) or cfg.is_mssql(dsn):
+        cursor_or_conn.execute(sql, params if params else None)
+        return cursor_or_conn, dict
+    if cfg.is_oracle(dsn):
+        cursor_or_conn.execute(sql, params if params else [])
+        columns = [description[0] for description in cursor_or_conn.description]
+        return cursor_or_conn, lambda row: dict(zip(columns, row))
+    cursor = cursor_or_conn.execute(sql, params if params else [])
+    return cursor, dict
+
+
+def run_select_to_file(
+    dsn: str,
+    cfg: "_CfgModule",
+    sql: str,
+    params: Any,
+    export_dir: Path,
+    filename: str = "",
+) -> tuple[Path, list[str], int, list[dict[str, Any]]]:
+    """Execute a SELECT and stream it to CSV in bounded batches."""
+    path: Path | None = None
+    try:
+        with _get_conn(dsn, cfg) as cursor_or_conn:
+            cursor, row_to_dict = _execute_select_cursor(
+                dsn, cfg, cursor_or_conn, sql, params
+            )
+            first_batch = [
+                row_to_dict(row) for row in cursor.fetchmany(_EXPORT_BATCH_SIZE)
+            ]
+            columns = list(first_batch[0]) if first_batch else []
+
+            def batches():
+                if first_batch:
+                    yield first_batch
+                while True:
+                    batch = cursor.fetchmany(_EXPORT_BATCH_SIZE)
+                    if not batch:
+                        break
+                    yield [row_to_dict(row) for row in batch]
+
+            path, row_count, preview = export_utils.export_csv_batches(
+                export_dir, columns, batches(), filename
+            )
+        return path, columns, row_count, preview
+    except Exception:
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+
+
 def _write_operation(sql: str) -> str:
     """Return an allowed single-statement write verb or raise ToolError."""
     statement = sql.strip()
@@ -295,7 +397,7 @@ def _write_operation(sql: str) -> str:
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
-    def db_list_databases() -> str:
+    def db_list_databases() -> dict[str, Any]:
         """List the names of all databases configured in config.toml.
 
         Use one of the returned names as the db_name parameter in other database tools.
@@ -306,7 +408,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 "No databases are configured. "
                 "Add entries under [database.connections] in config.toml."
             )
-        return f"Available databases: {', '.join(names)}. Use one of these as the db_name parameter."
+        return {"databases": names, "count": len(names)}
 
     def _resolve_db_name(db_name: str) -> str:
         if db_name:
@@ -319,10 +421,16 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         raise ToolError(f"Please specify db_name. Available: {', '.join(names)}")
 
     @mcp.tool()
-    def db_query(db_name: str = "", sql: str = "", params: list[Any] = []) -> str:
+    def db_query(
+        db_name: str = "",
+        sql: str = "",
+        params: list[Any] = [],
+        limit: int = DEFAULT_LIMIT,
+        cursor: str = "",
+    ) -> dict[str, Any]:
         """Execute a SELECT query against a named database.
 
-        Returns query results as a JSON string (list of row objects).
+        Returns a bounded page with items/count/truncated/next_cursor.
         Only SELECT statements are allowed; use db_execute for writes.
         Supports SQLite (file path), PostgreSQL, SQL Server and Oracle connections.
         If the result could be large (roughly hundreds to thousands of rows),
@@ -333,23 +441,32 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             db_name: Database name from config.toml (e.g. 'mydb'). Use db_list_databases() to see options.
             sql:     A SELECT SQL statement.
             params:  Optional positional parameters (%s for PostgreSQL/SQL Server, ? for SQLite, :1 for Oracle).
+            limit:   Rows per page (default 100, maximum 1000).
+            cursor:  next_cursor from the previous call. Use a deterministic
+                     ORDER BY when paging so rows remain stable between calls.
         """
         if not sql.strip().upper().startswith("SELECT"):
             raise ToolError("db_query only accepts SELECT statements. Use db_execute for INSERT/UPDATE/DELETE.")
-        dsn = cfg.resolve_db(_resolve_db_name(db_name))
-        rows = run_select(dsn, cfg, sql, params)
-        return json.dumps(rows, ensure_ascii=False, default=str)
+        resolved_name = _resolve_db_name(db_name)
+        dsn = cfg.resolve_db(resolved_name)
+        scope = json.dumps(
+            ["db_query", resolved_name, sql, params],
+            ensure_ascii=False,
+            default=str,
+            separators=(",", ":"),
+        )
+        return run_select_page(
+            dsn, cfg, sql, params, limit=limit, cursor=cursor, scope=scope
+        )
 
     @mcp.tool()
-    def db_query_to_file(db_name: str = "", sql: str = "", params: list[Any] = [], filename: str = "") -> dict:
+    def db_query_to_file(db_name: str = "", sql: str = "", params: list[Any] = [], filename: str = "") -> dict[str, Any]:
         """Execute a SELECT query and write the full result to a CSV file, instead of returning it inline.
 
-        Use this instead of db_query whenever the result could be large
-        (roughly hundreds to thousands of rows) — db_query returns every row
-        as JSON in the tool response, which costs a lot of tokens and can
-        exceed the model's context limit entirely. This tool writes the
-        complete result to a CSV file under the server's configured export
-        directory and returns only a small summary.
+        Use this instead of paging through db_query whenever the complete
+        result could be large (roughly hundreds to thousands of rows). This
+        tool fetches and writes rows in bounded batches, so neither the model
+        context nor server memory needs to hold the complete result.
 
         Do NOT call read_file() on the returned path to pull the CSV back
         into context — that defeats the purpose of this tool just as badly
@@ -383,18 +500,18 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         if not sql.strip().upper().startswith("SELECT"):
             raise ToolError("db_query_to_file only accepts SELECT statements. Use db_execute for INSERT/UPDATE/DELETE.")
         dsn = cfg.resolve_db(_resolve_db_name(db_name))
-        rows = run_select(dsn, cfg, sql, params)
-        columns = list(rows[0].keys()) if rows else []
         export_dir = cfg.get_export_dir()
-        path = export_utils.export_csv(export_dir, columns, rows, filename)
+        path, columns, row_count, preview = run_select_to_file(
+            dsn, cfg, sql, params, export_dir, filename
+        )
         # Round-trip through json with default=str so preview values (e.g.
         # datetime/Decimal from PostgreSQL/Oracle rows) are plain JSON types,
         # matching what db_query would have returned for the same rows.
-        preview = json.loads(json.dumps(rows[:5], ensure_ascii=False, default=str))
+        preview = json.loads(json.dumps(preview, ensure_ascii=False, default=str))
         result = {
             "path": str(path),
             "columns": columns,
-            "row_count": len(rows),
+            "row_count": row_count,
             "preview": preview,
             "size_kb": round(path.stat().st_size / 1024, 2),
         }
@@ -403,7 +520,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         return result
 
     @mcp.tool()
-    def db_execute(db_name: str = "", sql: str = "", params: list[Any] = []) -> dict:
+    def db_execute(db_name: str = "", sql: str = "", params: list[Any] = []) -> dict[str, Any]:
         """Execute an INSERT, UPDATE, or DELETE statement against a named database.
 
         Returns {"rows_affected": int, "last_insert_id": int}.
@@ -441,7 +558,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             return result
 
     @mcp.tool()
-    def db_list_schemas(db_name: str = "") -> str:
+    def db_list_schemas(
+        db_name: str = "", limit: int = DEFAULT_LIMIT, cursor: str = ""
+    ) -> dict[str, Any]:
         """List all user-defined schemas in a PostgreSQL, SQL Server, or Oracle database.
 
         Call this to discover available schemas before using db_list_tables.
@@ -449,10 +568,16 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
         Args:
             db_name: Database name from config.toml. Auto-selected if only one is configured.
+            limit:   Schemas per page (default 100, maximum 1000).
+            cursor:  next_cursor from the previous call.
         """
-        dsn = cfg.resolve_db(_resolve_db_name(db_name))
+        db_name = _resolve_db_name(db_name)
+        dsn = cfg.resolve_db(db_name)
         if not cfg.is_postgres(dsn) and not cfg.is_mssql(dsn) and not cfg.is_oracle(dsn):
-            return "SQLite does not use schemas. Use db_list_tables() directly."
+            schemas = ["main"]
+            return paginate(
+                schemas, limit, cursor, scope=f"db_list_schemas:{db_name}"
+            )
         with _get_conn(dsn, cfg) as cur:
             if cfg.is_oracle(dsn):
                 # In Oracle a "schema" is the owning user; list owners that have tables.
@@ -474,12 +599,17 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     "ORDER BY schema_name"
                 )
                 schemas = [row["schema_name"] for row in cur.fetchall()]
-        if not schemas:
-            return "No user-defined schemas found."
-        return f"Available schemas: {', '.join(schemas)}. Pass one as the schema parameter in db_list_tables()."
+        return paginate(
+            schemas, limit, cursor, scope=f"db_list_schemas:{db_name}"
+        )
 
     @mcp.tool()
-    def db_list_tables(db_name: str = "", schema: str = "public") -> str:
+    def db_list_tables(
+        db_name: str = "",
+        schema: str = "public",
+        limit: int = DEFAULT_LIMIT,
+        cursor: str = "",
+    ) -> dict[str, Any]:
         """List all table names in a named database and schema.
 
         For PostgreSQL databases with multiple schemas, call db_list_schemas() first
@@ -488,6 +618,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         Args:
             db_name: Database name from config.toml. Auto-selected if only one is configured.
             schema:  Schema name (default: 'public'). Use db_list_schemas() to see all schemas.
+            limit:   Tables per page (default 100, maximum 1000).
+            cursor:  next_cursor from the previous call.
         """
         if not db_name:
             names = cfg.list_db_names()
@@ -496,7 +628,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             if len(names) == 1:
                 db_name = names[0]
             else:
-                return f"Please specify db_name. Available databases: {', '.join(names)}"
+                raise ToolError(f"Please specify db_name. Available databases: {', '.join(names)}")
         dsn = cfg.resolve_db(db_name)
         with _get_conn(dsn, cfg) as cur:
             if cfg.is_postgres(dsn):
@@ -530,15 +662,19 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
                 )
                 tables = [row["name"] for row in cursor.fetchall()]
-        if not tables:
-            return f"No tables found in '{db_name}' schema '{schema}'. Try db_list_schemas() to see available schemas."
-        return f"Tables in '{db_name}'.'{schema}' ({len(tables)} total): {', '.join(tables)}"
+        return paginate(
+            tables,
+            limit,
+            cursor,
+            scope=f"db_list_tables:{db_name}:{schema}",
+        )
 
     @mcp.tool()
-    def db_table_schema(db_name: str = "", table_name: str = "", schema: str = "public") -> str:
+    def db_table_schema(db_name: str = "", table_name: str = "", schema: str = "public") -> dict[str, Any]:
         """Get the column definitions for a table in a named database.
 
-        Returns column info as a JSON string: name, type, notnull, default_value, is_primary_key.
+        Returns {"columns": [...], "count": int}. Each column contains name,
+        type, notnull, default_value, and is_primary_key (plus cid for SQLite).
 
         Args:
             db_name:    Database name from config.toml. Auto-selected if only one is configured.
@@ -573,7 +709,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 rows = cur.fetchall()
                 if not rows:
                     raise ToolError(f"Table '{table_name}' not found in schema '{schema}'. Try db_list_schemas() to see available schemas.")
-                return json.dumps(rows, ensure_ascii=False, default=str)
+                columns = json.loads(
+                    json.dumps(rows, ensure_ascii=False, default=str)
+                )
             elif cfg.is_mssql(dsn):
                 # MSSQL's default schema is 'dbo', not Postgres' 'public'.
                 mssql_schema = "dbo" if schema == "public" else schema
@@ -602,7 +740,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 rows = cur.fetchall()
                 if not rows:
                     raise ToolError(f"Table '{table_name}' not found in schema '{mssql_schema}'. Try db_list_schemas() to see available schemas.")
-                return json.dumps(rows, ensure_ascii=False, default=str)
+                columns = json.loads(
+                    json.dumps(rows, ensure_ascii=False, default=str)
+                )
             elif cfg.is_oracle(dsn):
                 # Oracle identifiers are upper-case; "schema" is the owning user.
                 table = table_name.upper()
@@ -637,7 +777,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 rows = cur.fetchall()
                 if not rows:
                     raise ToolError(f"Table '{table}' not found in schema '{owner}'. Try db_list_schemas() to see available schemas.")
-                return json.dumps([
+                columns = json.loads(json.dumps([
                     {
                         "name": row[0],
                         "type": row[1],
@@ -646,13 +786,13 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                         "is_primary_key": bool(row[4]),
                     }
                     for row in rows
-                ], ensure_ascii=False, default=str)
+                ], ensure_ascii=False, default=str))
             else:
                 cursor = cur.execute(f"PRAGMA table_info({table_name})")
                 rows = cursor.fetchall()
                 if not rows:
                     raise ToolError(f"Table not found or empty schema: {table_name}")
-                return json.dumps([
+                columns = json.loads(json.dumps([
                     {
                         "cid": row["cid"],
                         "name": row["name"],
@@ -662,7 +802,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                         "is_primary_key": bool(row["pk"]),
                     }
                     for row in rows
-                ], ensure_ascii=False, default=str)
+                ], ensure_ascii=False, default=str))
+        return {"columns": columns, "count": len(columns)}
 
     @mcp.tool()
     def db_execute_script(db_name: str, script: str) -> str:

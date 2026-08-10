@@ -1,5 +1,9 @@
 # Run on an ONLINE Windows machine. Downloads all dependencies and packs them.
-param([string]$Proxy = "")
+param(
+    [string]$Proxy = "",
+    [ValidateSet("core", "postgres", "sqlserver", "oracle", "databases")]
+    [string]$Extras = "core"
+)
 $ErrorActionPreference = "Stop"
 
 # Find project root (folder containing pyproject.toml)
@@ -18,12 +22,12 @@ $ProxyArg = if ($Proxy) { @("--proxy", $Proxy) } else { @() }
 # Build backend needed to build this project's wheel
 pip install @ProxyArg hatchling
 
-# Download all runtime dependencies as wheels.
-# Read them straight from pyproject.toml (pip download .) so newly added
-# dependencies are packed automatically — no need to edit this list by hand.
+# Download core runtime dependencies and any requested database-driver extra.
 $PkgDir = Join-Path $Root "offline_packages"
 New-Item -ItemType Directory -Force -Path $PkgDir | Out-Null
-pip download @ProxyArg . -d $PkgDir
+$ProjectSpec = if ($Extras -eq "core") { "." } else { ".[${Extras}]" }
+pip download @ProxyArg $ProjectSpec -d $PkgDir
+Set-Content -Path (Join-Path $PkgDir "_mcp_extras.txt") -Value $Extras -Encoding ASCII
 
 # Also download the hatchling build backend so the target can do an EDITABLE
 # install (pip install -e .) fully offline. Editable mode means the target's

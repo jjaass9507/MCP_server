@@ -22,7 +22,7 @@ import operator
 import platform
 import sys
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -109,7 +109,7 @@ def register(mcp: FastMCP) -> None:
         return message
 
     @mcp.tool()
-    def system_info() -> dict:
+    def system_info() -> dict[str, Any]:
         """Return basic information about the server environment.
 
         Includes: Python version, platform, UTC timestamp, plus the running

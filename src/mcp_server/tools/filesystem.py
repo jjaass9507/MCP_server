@@ -1,12 +1,18 @@
 import pathlib
 import stat
 from datetime import datetime
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.utils.errors import ToolError
 from mcp_server.utils.logging import get_logger
+from mcp_server.utils.pagination import (
+    DEFAULT_LIMIT,
+    page_from_rows,
+    paginate,
+    page_window,
+)
 
 if TYPE_CHECKING:
     import mcp_server.config as _CfgModule
@@ -19,7 +25,7 @@ MAX_READ_BYTES = 1 * 1024 * 1024  # 1 MB
 def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
-    def fs_list_allowed_paths() -> str:
+    def fs_list_allowed_paths() -> dict[str, Any]:
         """List all directories that are allowed for filesystem access.
 
         Always call this first before using any other filesystem tool to discover
@@ -32,7 +38,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 "No filesystem paths are configured. "
                 "Add entries under [filesystem] allowed_paths in config.toml."
             )
-        return f"Allowed paths: {', '.join(paths)}. Use one of these (or a sub-path) as the path argument."
+        return {"paths": paths, "count": len(paths)}
 
     @mcp.tool()
     def read_file(path: str) -> str:
@@ -88,13 +94,20 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             raise ToolError(f"Could not write file: {e}") from e
 
     @mcp.tool()
-    def list_directory(path: str, recursive: bool = False) -> list[dict]:
+    def list_directory(
+        path: str,
+        recursive: bool = False,
+        limit: int = DEFAULT_LIMIT,
+        cursor: str = "",
+    ) -> dict[str, Any]:
         """List the contents of a directory.
 
         Call fs_list_allowed_paths() first to discover accessible directories.
         The path must be an absolute path inside an allowed directory.
-        Returns entries with: name, type ('file'|'dir'), size (bytes), modified (ISO 8601).
-        Set recursive=True to include all nested contents.
+        Returns a page with items/count/truncated/next_cursor. Each item has:
+        name, type ('file'|'dir'), size (bytes), modified (ISO 8601).
+        Set recursive=True to include nested contents. Pass next_cursor back as
+        cursor to continue; limit defaults to 100 and cannot exceed 1000.
         """
         p = pathlib.Path(path).resolve()
         cfg.check_path(p)
@@ -103,9 +116,12 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         if not p.is_dir():
             raise ToolError(f"Path is not a directory: {path}")
         try:
+            scope = f"list_directory:{p}:{recursive}"
+            offset, page_limit = page_window(limit, cursor, scope)
             iterator = p.rglob("*") if recursive else p.iterdir()
             entries = []
-            for entry in sorted(iterator, key=lambda e: (e.is_file(), e.name)):
+            ordered = sorted(iterator, key=lambda e: (e.is_file(), str(e.relative_to(p))))
+            for entry in ordered[offset : offset + page_limit + 1]:
                 s = entry.stat()
                 entries.append({
                     "name": str(entry.relative_to(p)),
@@ -113,17 +129,24 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     "size": s.st_size if entry.is_file() else 0,
                     "modified": datetime.fromtimestamp(s.st_mtime).isoformat(),
                 })
-            return entries
+            return page_from_rows(entries, offset, page_limit, scope)
         except OSError as e:
             raise ToolError(f"Could not list directory: {e}") from e
 
     @mcp.tool()
-    def search_files(directory: str, pattern: str, recursive: bool = True) -> list[str]:
+    def search_files(
+        directory: str,
+        pattern: str,
+        recursive: bool = True,
+        limit: int = DEFAULT_LIMIT,
+        cursor: str = "",
+    ) -> dict[str, Any]:
         """Search for files matching a glob pattern within an allowed directory.
 
         Call fs_list_allowed_paths() first to discover accessible directories.
         Pattern examples: '*.py', '**/*.json', 'data_*.csv'
-        Returns matching file paths as strings.
+        Returns a page with items/count/truncated/next_cursor. Pass next_cursor
+        back as cursor to continue; limit defaults to 100 and cannot exceed 1000.
         """
         p = pathlib.Path(directory).resolve()
         cfg.check_path(p)
@@ -133,12 +156,18 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             raise ToolError(f"Path is not a directory: {directory}")
         try:
             glob_fn = p.rglob if recursive else p.glob
-            return [str(m) for m in sorted(glob_fn(pattern)) if m.is_file()]
+            matches = [str(m) for m in sorted(glob_fn(pattern)) if m.is_file()]
+            return paginate(
+                matches,
+                limit,
+                cursor,
+                scope=f"search_files:{p}:{pattern}:{recursive}",
+            )
         except OSError as e:
             raise ToolError(f"Search failed: {e}") from e
 
     @mcp.tool()
-    def file_info(path: str) -> dict:
+    def file_info(path: str) -> dict[str, Any]:
         """Get metadata about a file or directory.
 
         Call fs_list_allowed_paths() first to discover accessible directories.

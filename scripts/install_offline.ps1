@@ -9,13 +9,74 @@ while ($Root -and -not (Test-Path (Join-Path $Root "pyproject.toml"))) {
 if (-not $Root) { Write-Error "Project root not found (pyproject.toml missing)"; exit 1 }
 Set-Location $Root
 
-# Confirm Python is available
-$ver = python --version 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Python not found. Install Python 3.11+ from https://www.python.org/downloads/"
+# Require the exact Python patch release used for this offline deployment.
+$RequiredPythonVersion = "3.11.9"
+
+function Resolve-PythonExecutable {
+    param(
+        [string]$CommandName,
+        [string[]]$LauncherArgs = @()
+    )
+
+    $Command = Get-Command $CommandName -ErrorAction SilentlyContinue
+    if (-not $Command) { return $null }
+
+    try {
+        $Executable = & $Command.Source @LauncherArgs -c "import sys; print(sys.executable)" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $Executable) {
+            return ($Executable | Select-Object -Last 1).Trim()
+        }
+    } catch {
+        return $null
+    }
+
+    return $null
+}
+
+# Check common Windows launch methods. Resolve each one to python.exe first so
+# venv creation cannot accidentally use a different Python from the one tested.
+$PythonCandidates = @()
+$CandidateSpecs = @(
+    @{ Name = "python"; Args = @() },
+    @{ Name = "py"; Args = @("-3.11") },
+    @{ Name = "python3.11"; Args = @() }
+)
+
+foreach ($Spec in $CandidateSpecs) {
+    $Candidate = Resolve-PythonExecutable -CommandName $Spec.Name -LauncherArgs $Spec.Args
+    if ($Candidate -and $PythonCandidates -notcontains $Candidate) {
+        $PythonCandidates += $Candidate
+    }
+}
+
+$PythonExe = $null
+$DetectedVersions = @()
+foreach ($Candidate in $PythonCandidates) {
+    try {
+        $CandidateVersion = (& $Candidate -c "import platform; print(platform.python_version())" 2>$null).Trim()
+        if ($LASTEXITCODE -eq 0) {
+            $DetectedVersions += "$CandidateVersion ($Candidate)"
+            if ($CandidateVersion -eq $RequiredPythonVersion) {
+                $PythonExe = $Candidate
+                break
+            }
+        }
+    } catch {
+        # Ignore broken aliases/installations and continue checking candidates.
+    }
+}
+
+if (-not $PythonExe) {
+    $Detected = if ($DetectedVersions.Count -gt 0) {
+        $DetectedVersions -join "; "
+    } else {
+        "none"
+    }
+    Write-Error "Python $RequiredPythonVersion is required. Detected: $Detected. Install the exact version from https://www.python.org/downloads/release/python-3119/"
     exit 1
 }
-Write-Host "Using $ver"
+
+Write-Host "Using Python $RequiredPythonVersion at $PythonExe"
 
 $PkgDir = Join-Path $Root "offline_packages"
 if (-not (Test-Path $PkgDir)) {
@@ -39,14 +100,22 @@ if (Test-Path $VenvDir) {
 }
 
 Write-Host "Creating virtual environment..."
-python -m venv $VenvDir
+& $PythonExe -m venv $VenvDir
 
 # Use 'python -m pip' (NOT pip.exe) so it works even on a fresh venv.
 $VenvPy = Join-Path $VenvDir "Scripts\python.exe"
+$VenvVersion = (& $VenvPy -c "import platform; print(platform.python_version())").Trim()
+if ($LASTEXITCODE -ne 0 -or $VenvVersion -ne $RequiredPythonVersion) {
+    Write-Error "Virtual environment uses Python $VenvVersion; expected $RequiredPythonVersion."
+    exit 1
+}
 
-# 1. Install runtime dependencies (mcp, psycopg, ...) AND the project wheel.
-#    This resolves and installs every dependency from the offline wheels.
-& $VenvPy -m pip install --no-index --find-links="$PkgDir" "$($WheelFile.FullName)"
+# 1. Install core runtime dependencies, the database-driver extras selected
+#    while packing, and the project wheel.
+$ExtrasFile = Join-Path $PkgDir "_mcp_extras.txt"
+$Extras = if (Test-Path $ExtrasFile) { (Get-Content $ExtrasFile -Raw).Trim() } else { "core" }
+$WheelSpec = if ($Extras -eq "core") { $WheelFile.FullName } else { "$($WheelFile.FullName)[$Extras]" }
+& $VenvPy -m pip install --no-index --find-links="$PkgDir" "$WheelSpec"
 
 # 2. Make the LIVE source tree authoritative so a plain 'git pull' updates the
 #    running server with no reinstall (the #1 cause of "I updated the code but
