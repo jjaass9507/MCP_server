@@ -5,7 +5,12 @@ WORKDIR /build
 COPY pyproject.toml .
 COPY src/ src/
 
-RUN pip install --no-cache-dir --prefix=/install .
+ARG MCP_EXTRAS=""
+RUN if [ -n "$MCP_EXTRAS" ]; then \
+        pip install --no-cache-dir --prefix=/install ".[${MCP_EXTRAS}]"; \
+    else \
+        pip install --no-cache-dir --prefix=/install .; \
+    fi
 
 # ── runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.11-slim
@@ -32,4 +37,4 @@ EXPOSE 8080
 # TCP-level liveness check: verifies the port is accepting connections.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD python -c "import socket; s=socket.create_connection(('localhost',8080),timeout=3); s.close()"
 
-CMD ["mcp-server", "--transport", "sse", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["mcp-server", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8080"]

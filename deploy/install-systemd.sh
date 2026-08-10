@@ -20,7 +20,11 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 echo "==> Creating virtualenv and installing"
 python3.11 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
-"$INSTALL_DIR/.venv/bin/pip" install -q "$INSTALL_DIR"
+PACKAGE_SPEC="$INSTALL_DIR"
+if [[ -n "${MCP_EXTRAS:-}" ]]; then
+    PACKAGE_SPEC="$INSTALL_DIR[$MCP_EXTRAS]"
+fi
+"$INSTALL_DIR/.venv/bin/pip" install -q "$PACKAGE_SPEC"
 
 echo "==> Installing config template (if absent)"
 mkdir -p "$CONFIG_DIR"

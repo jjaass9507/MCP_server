@@ -20,6 +20,7 @@ from mcp_server.tools import database
 from mcp_server.utils import download_server, export as export_utils
 from mcp_server.utils.errors import ToolError
 from mcp_server.utils.logging import get_logger
+from mcp_server.utils.pagination import DEFAULT_LIMIT, paginate
 
 if TYPE_CHECKING:
     import mcp_server.config as _CfgModule
@@ -191,6 +192,12 @@ def _estimate_rows(n_tags: int, start: datetime, end: datetime, bucket: str) -> 
     return n_tags * buckets
 
 
+def _page_scope(tool: str, *args: Any) -> str:
+    return json.dumps(
+        [tool, *args], ensure_ascii=False, default=str, separators=(",", ":")
+    )
+
+
 # ── PostgreSQL: point lookup shared by list_points, D and E ────────────────
 
 def _fetch_points(
@@ -348,8 +355,13 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
     def gms_list_equipment(
-        building: str = "", category: str = "", equipment_type: str = "", floor: str = ""
-    ) -> str:
+        building: str = "",
+        category: str = "",
+        equipment_type: str = "",
+        floor: str = "",
+        limit: int = DEFAULT_LIMIT,
+        cursor: str = "",
+    ) -> dict[str, Any]:
         """List compressed-air equipment from the PostgreSQL equipment master (Mode A).
 
         building, category, equipment_type and floor are all optional
@@ -360,6 +372,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             category:       Broad equipment category, e.g. '空壓機'/'乾燥機'/'真空機'. Optional.
             equipment_type: Specific equipment type, e.g. '離心機'/'變頻螺旋機'. Optional.
             floor:          Floor, e.g. '2F'. Optional.
+            limit:          Rows per page (default 100, maximum 1000).
+            cursor:         next_cursor from the previous call.
         """
         dsn = cfg.resolve_db(CATALOG_DB)
         where = ["is_active = TRUE"]
@@ -382,8 +396,12 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             WHERE {' AND '.join(where)}
             ORDER BY floor, category, equipment_type, device_id
         """
-        rows = database.run_select(dsn, cfg, sql, params)
-        return json.dumps(rows, ensure_ascii=False, default=str)
+        scope = _page_scope(
+            "gms_list_equipment", building, category, equipment_type, floor
+        )
+        return database.run_select_page(
+            dsn, cfg, sql, params, limit=limit, cursor=cursor, scope=scope
+        )
 
     @mcp.tool()
     def gms_list_points(
@@ -392,7 +410,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         category: str = "",
         equipment_type: str = "",
         keyword: str = "",
-    ) -> str:
+        limit: int = DEFAULT_LIMIT,
+        cursor: str = "",
+    ) -> dict[str, Any]:
         """List monitoring points and SCADA tags for one piece of equipment (Mode B).
 
         building+device_id is not guaranteed unique (e.g. two 'A1' units, one an
@@ -405,6 +425,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             category:       Broad equipment category, e.g. '空壓機'/'乾燥機'/'真空機'. Optional.
             equipment_type: Specific equipment type, e.g. '離心機'/'變頻螺旋機'. Optional.
             keyword:        Substring filter on point_name (LIKE). Optional.
+            limit:          Rows per page (default 100, maximum 1000).
+            cursor:         next_cursor from the previous call.
         """
         if not building or not device_id:
             raise ToolError("請提供 building 與 device_id。")
@@ -418,15 +440,34 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             if not category and not equipment_type:
                 msg += "。同編號可能對應多種設備，可提供 category 或 equipment_type 以精確鎖定"
             raise ToolError(msg + "。")
-        return json.dumps(rows, ensure_ascii=False, default=str)
+        return paginate(
+            rows,
+            limit,
+            cursor,
+            scope=_page_scope(
+                "gms_list_points",
+                building,
+                device_id,
+                category,
+                equipment_type,
+                keyword,
+            ),
+        )
 
     @mcp.tool()
-    def gms_list_pipe_points(building: str = "", system_name: str = "") -> str:
+    def gms_list_pipe_points(
+        building: str = "",
+        system_name: str = "",
+        limit: int = DEFAULT_LIMIT,
+        cursor: str = "",
+    ) -> dict[str, Any]:
         """List pipe-network monitoring points for a building (Mode C).
 
         Args:
             building:    Building code, e.g. 'K18'. Required.
             system_name: Pipe system, one of 'HCDA' / 'LCDA' / 'HVAC'. Required.
+            limit:       Rows per page (default 100, maximum 1000).
+            cursor:      next_cursor from the previous call.
         """
         if not building or not system_name:
             raise ToolError("請提供 building 與 system_name（HCDA / LCDA / HVAC）。")
@@ -438,13 +479,24 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
               AND scada_available = TRUE
             ORDER BY floor, location, point_name
         """
-        rows = database.run_select(
-            dsn, cfg, sql, {"building": building, "system_name": system_name}
+        params = {"building": building, "system_name": system_name}
+        return database.run_select_page(
+            dsn,
+            cfg,
+            sql,
+            params,
+            limit=limit,
+            cursor=cursor,
+            scope=_page_scope("gms_list_pipe_points", building, system_name),
         )
-        return json.dumps(rows, ensure_ascii=False, default=str)
 
     @mcp.tool()
-    def gms_realtime_values(building: str = "", tag_names: list[str] = []) -> str:
+    def gms_realtime_values(
+        building: str = "",
+        tag_names: list[str] = [],
+        limit: int = DEFAULT_LIMIT,
+        cursor: str = "",
+    ) -> dict[str, Any]:
         """Get the latest SCADA value for a list of already-known tags (Mode D).
 
         This tool only fetches Oracle values for tag_names you already have —
@@ -459,6 +511,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                        the Oracle zone/system table for each tag.
             tag_names: Exact SCADA tag names to fetch, e.g. from a prior
                        gms_list_points call. Required.
+            limit:     Rows per page (default 100, maximum 1000).
+            cursor:    next_cursor from the previous call.
         """
         if not building or not tag_names:
             raise ToolError("請提供 building 與 tag_names（請先呼叫 gms_list_points 取得確切的 tag_name）。")
@@ -489,7 +543,12 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     "datetime": v["DATETIME"] if v else None,
                 }
             )
-        return json.dumps(result, ensure_ascii=False, default=str)
+        return paginate(
+            result,
+            limit,
+            cursor,
+            scope=_page_scope("gms_realtime_values", building, tag_names),
+        )
 
     @mcp.tool()
     def gms_history_values(
@@ -498,7 +557,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         end_time: str = "",
         tag_names: list[str] = [],
         to_file: bool = False,
-    ) -> str:
+        limit: int = DEFAULT_LIMIT,
+        cursor: str = "",
+    ) -> dict[str, Any]:
         """Get a historical value series for a list of already-known tags (Mode E).
 
         This tool only fetches Oracle values for tag_names you already have —
@@ -525,8 +586,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         each tag's point_name/phase/unit/tag_name/summary, and the file info.
         Do NOT read_file() that CSV back into context — pass its path to a
         downstream file-processing tool or external workflow instead. With
-        to_file=false (default) behavior is unchanged: series stays embedded
-        per tag.
+        to_file=false (default), samples are returned as a bounded page in
+        items/count/truncated/next_cursor; summaries contains full-window
+        per-tag statistics.
 
         If [export] serve_downloads is enabled in config.toml, result.file
         also includes "download_url": a time-limited (default 60 minutes),
@@ -544,9 +606,13 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                         gms_list_points call. Required.
             to_file:    Write the series to a CSV file instead of embedding
                         it in the response (see above). Default: False.
+            limit:      Inline samples per page (default 100, maximum 1000).
+            cursor:     next_cursor from the previous inline call.
         """
         if not building or not start_time or not end_time or not tag_names:
             raise ToolError("請提供 building、start_time、end_time、tag_names（請先呼叫 gms_list_points 取得確切的 tag_name）。")
+        if to_file and cursor:
+            raise ToolError("cursor is only supported when to_file=False.")
         start_dt = _parse_dt(start_time, "start_time")
         end_dt = _parse_dt(end_time, "end_time")
         if start_dt > end_dt:
@@ -574,6 +640,8 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     series[row["TAGNAME"]].append({"value": row["VALUE"], "datetime": row["DATETIME"]})
 
         points_out = []
+        summaries = []
+        inline_rows: list[dict] = []
         csv_rows: list[dict] = []
         for tag, meta in by_tag.items():
             pts = series[tag]
@@ -585,6 +653,15 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 values = _numeric([p["value"] for p in pts])
                 if values:
                     summary = {"max": max(values), "min": min(values), "latest": values[-1]}
+            summaries.append(
+                {
+                    "point_name": meta["point_name"],
+                    "phase": meta["phase"],
+                    "unit": meta["unit"],
+                    "tag_name": tag,
+                    "summary": summary,
+                }
+            )
             if to_file:
                 for p in pts:
                     csv_rows.append({
@@ -605,24 +682,23 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     }
                 )
             else:
-                points_out.append(
-                    {
+                for p in pts:
+                    inline_rows.append({
                         "point_name": meta["point_name"],
                         "phase": meta["phase"],
                         "unit": meta["unit"],
                         "tag_name": tag,
-                        "series": pts,
-                        "summary": summary,
-                    }
-                )
+                        "datetime": p["datetime"],
+                        "value": p["value"],
+                    })
 
         result: dict[str, Any] = {
             "adjusted": adjusted,
             "start_time": start_dt.strftime(_DT_FMT),
             "end_time": end_dt.strftime(_DT_FMT),
-            "points": points_out,
         }
         if to_file:
+            result["points"] = points_out
             export_dir = cfg.get_export_dir()
             columns = ["tag_name", "point_name", "phase", "unit", "datetime", "value"]
             path = export_utils.export_csv(export_dir, columns, csv_rows)
@@ -633,7 +709,19 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             }
             if cfg.get_download_config()["serve_downloads"]:
                 result["file"]["download_url"] = download_server.register_file(path)
-        return json.dumps(result, ensure_ascii=False, default=str)
+        else:
+            result["summaries"] = summaries
+            result.update(
+                paginate(
+                    inline_rows,
+                    limit,
+                    cursor,
+                    scope=_page_scope(
+                        "gms_history_values", building, start_dt, end_dt, tag_names
+                    ),
+                )
+            )
+        return result
 
     @mcp.tool()
     def gms_history_aggregate(
@@ -644,7 +732,9 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         bucket: str = "1h",
         aggs: list[str] = [],
         to_file: bool = False,
-    ) -> str:
+        limit: int = DEFAULT_LIMIT,
+        cursor: str = "",
+    ) -> dict[str, Any]:
         """Get a downsampled historical series for long-range analysis (Mode F).
 
         Oracle stores one raw sample per minute, so pulling a raw series over
@@ -682,9 +772,13 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                         True or use a coarser bucket. Do NOT read that CSV back
                         into context; hand its path/download_url downstream.
                         Default False.
+            limit:      Inline buckets per page (default 100, maximum 1000).
+            cursor:     next_cursor from the previous inline call.
         """
         if not building or not start_time or not end_time or not tag_names:
             raise ToolError("請提供 building、start_time、end_time、tag_names（請先呼叫 gms_list_points 取得確切的 tag_name）。")
+        if to_file and cursor:
+            raise ToolError("cursor is only supported when to_file=False.")
         start_dt = _parse_dt(start_time, "start_time")
         end_dt = _parse_dt(end_time, "end_time")
         if start_dt > end_dt:
@@ -720,6 +814,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     series[row["TAGNAME"]].append(point)
 
         points_out = []
+        inline_rows: list[dict] = []
         csv_rows: list[dict] = []
         for tag, meta in by_tag.items():
             buckets = series[tag]
@@ -743,24 +838,24 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                     }
                 )
             else:
-                points_out.append(
-                    {
+                for b in buckets:
+                    inline_rows.append({
                         "point_name": meta["point_name"],
                         "phase": meta["phase"],
                         "unit": meta["unit"],
                         "tag_name": tag,
-                        "series": buckets,
-                    }
-                )
+                        "time": b["time"],
+                        **{a: b[a] for a in agg_list},
+                    })
 
         result: dict[str, Any] = {
             "bucket": bucket,
             "aggs": agg_list,
             "start_time": start_dt.strftime(_DT_FMT),
             "end_time": end_dt.strftime(_DT_FMT),
-            "points": points_out,
         }
         if to_file:
+            result["points"] = points_out
             export_dir = cfg.get_export_dir()
             columns = ["tag_name", "point_name", "phase", "unit", "time", *agg_list]
             path = export_utils.export_csv(export_dir, columns, csv_rows)
@@ -771,4 +866,21 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
             }
             if cfg.get_download_config()["serve_downloads"]:
                 result["file"]["download_url"] = download_server.register_file(path)
-        return json.dumps(result, ensure_ascii=False, default=str)
+        else:
+            result.update(
+                paginate(
+                    inline_rows,
+                    limit,
+                    cursor,
+                    scope=_page_scope(
+                        "gms_history_aggregate",
+                        building,
+                        start_dt,
+                        end_dt,
+                        tag_names,
+                        bucket,
+                        agg_list,
+                    ),
+                )
+            )
+        return result

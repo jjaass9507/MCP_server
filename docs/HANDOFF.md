@@ -44,7 +44,7 @@ service 名別名，token/DSN/api_key 一律由 `config.toml` 注入、絕不進
 
 ```
 python -m mcp_server.server                                  # stdio（Claude Desktop）
-python -m mcp_server.server --transport sse --port 8080      # SSE（Open WebUI）
+python -m mcp_server.server --transport streamable-http      # HTTP endpoint: /mcp
 ```
 
 **server 必須從專案根目錄啟動**：`config.py` 以 cwd 找 `config.toml`
@@ -76,6 +76,14 @@ Log 一律走 **stderr**（stdout 保留給 stdio transport 的 JSON-RPC）。
   （`db_list_databases` / `api_list_services` / `fs_list_allowed_paths` /
   `list_presentation_styles`）。這個專案大量心力花在把「agent 會犯的錯」
   寫進 docstring 預防，改工具時請延續這個做法。
+- 回傳物件的工具必須使用 `dict[str, Any]`（或更明確的 typed model）作為
+  return annotation，不能只寫裸 `dict`；FastMCP 1.x 只有在取得 output
+  schema 時才會把結果放進 MCP `structuredContent`。Discovery 工具也回傳
+  具名集合（例如 `{databases, count}`），不要把 list 再包成人類可讀字串。
+- `[tools] profile` 控制啟動時註冊的工具類別，預設 `all` 保持向後相容；
+  `enabled_categories` 可精確覆寫。新增工具類別時要同步更新
+  `config.TOOL_CATEGORIES`、profile mapping 與 `server.create_server()` 的條件註冊，
+  並確保 server instructions 不會提到未啟用的工具。
 - 行為守則見 `CLAUDE.md`：surgical changes、簡單優先、先問再假設。
 
 ### 資料庫層設計決策
@@ -289,27 +297,44 @@ main 上的程式與行為都正確，真因是**廠內機跑的不是含修正�
 3. ✅ **已完成（2026-07-03，commit `a29ba14`）**：README Project
    Structure 與 `database.py` 過時 docstring 均已更新。
 
-4. **【效能】連線池/快取**：目前每次工具呼叫都新建 DB 連線，Oracle
-   建線特別慢，GMS 一次查詢又會多批次呼叫。可在 `database.py` 加簡單的
-   per-DSN 連線快取（注意執行緒安全與斷線重連）。
+4. ✅ **已完成（2026-08）**：PostgreSQL / MSSQL / Oracle 已使用 bounded
+   per-DSN 連線池；連線建立失敗時也會歸還 pool capacity。
 
-5. **【功能】`db_query` 的 `SELECT` 前綴檢查擋掉 CTE**：
+5. ✅ **已完成（2026-08）**：`db_query`、filesystem 列舉、DB schema/table
+   列舉，以及 GMS 列表/即時/歷史 inline 結果統一使用
+   `{items, count, truncated, next_cursor}`；預設 100、最高 1000。cursor 綁定
+   原工具參數，換 SQL 或 filters 時必須從無 cursor 的第一頁重新開始。
+
+6. ✅ **已完成（2026-08）**：`db_query_to_file` 使用 cursor `fetchmany()`
+   分批寫入 CSV，只保留前 5 筆 preview，不再先把完整查詢結果載入記憶體。
+
+7. **【功能】`db_query` 的 `SELECT` 前綴檢查擋掉 CTE**：
    `WITH x AS (...) SELECT ...` 是合法唯讀查詢卻被拒。放寬時維持唯讀
    保證（例如允許 `WITH` 開頭但整串只含 SELECT）。
 
-6. **【升級注意】SSE transport 已被 MCP spec 淘汰**（新標準是
-   streamable HTTP）。升級 `mcp` 套件時 Open WebUI 的接法可能要跟著改。
-   另外 SSE 端點無認證、預設 bind `0.0.0.0`——目前在隔離內網可接受，
-   但如果部署環境改變要先處理。
+6. ✅ **已完成（2026-08）**：正式 HTTP transport 已遷移到 Streamable
+   HTTP `/mcp`，預設 bind `127.0.0.1` 並啟用 SDK Host/Origin 驗證；非本機
+   bind 強制使用環境變數 bearer token。舊 SSE 僅保留 localhost 相容模式，
+   啟動時會顯示 deprecated 警告。
 
-7. **【重構，順手做即可】**
+7. ✅ **已完成（2026-08）**：通用 `api_request` 的 method 已改為 MCP enum；
+   每個 service 可限制 `allowed_methods` / `allowed_path_prefixes`，並強制
+   timeout（最高 120 秒）及 JSON request body（最高 1 MB）上限。未設定
+   `allowed_methods` 時安全預設為 GET-only。
+
+8. ✅ **已完成（2026-08）**：GitHub Actions CI 以 Python 3.11/3.12 做 fresh
+   editable install，固定驗證 MCP major version 仍為 1，並執行 `pip check`、
+   完整 pytest（含 tool schema/config/access-control/API/connection regression）、
+   compileall 與 `git diff --check`。
+
+9. **【重構，順手做即可】**
    - `config.py` 在 import 時載入設定，難以測試；可改成顯式
      `load()` + 注入。
    - GMS 的連線名 `postgreSQL_CIM` / `oracle` 寫死，可移到 config
      （移的話記得同步 config.toml.example 與廠內 config）。
-   - `custom.py` 的 `calculate` 用受限 `eval`，理論上可用 attribute
-     chain 逃逸（`(1).__class__...`）；信任環境下低風險，改 `ast`
-     求值即可根治。
+   - ✅ `custom.py` 的 `calculate` 已改為 AST 白名單 evaluator，並限制
+     expression complexity、整數大小與 exponent，避免 attribute chain
+     逃逸及明顯的資源耗用攻擊。
    - Secrets（DSN 密碼、Push+ token）明文存 config.toml——air-gapped
      環境下可接受，文件註明即可，別過度工程。
 
@@ -382,11 +407,11 @@ preview +（GMS）per-tag summary」；且 docstring 必須明確警告 agent
 2. **新增 `db_query_to_file(db_name, sql, params, filename="")`**
    （`database.py`）：執行 SELECT、寫 CSV，回傳
    `{path, columns, row_count, preview(前 5 筆), size_kb}`。
-   **不改 `db_query`**——小結果直接回傳仍是最方便的路徑，docstring
-   互相指引（「結果可能上千列時改用 db_query_to_file」）。
+   `db_query` 現已加入 bounded pagination；結果可能上千列且需要完整資料時
+   仍應改用 `db_query_to_file`。
 
 3. **`gms_history_values` 加選用參數 `to_file: bool = False`**：
-   預設行為 100% 不變（向後相容，不破壞既有工具契約，見 §3）。
+   `to_file=true` 的完整匯出行為維持；inline 模式現已改成 bounded page。
    `to_file=true` 時把 series 寫成 CSV（欄位：`tag_name, point_name,
    phase, unit, datetime, value`），回傳保留 `adjusted` /
    `start_time` / `end_time` / 每 tag 的 `summary`（max/min/latest），
@@ -418,8 +443,8 @@ preview +（GMS）per-tag summary」；且 docstring 必須明確警告 agent
 
 - 查 1 天 × 10 tags 的歷史資料，工具回傳給 agent 的內容 < 1 KB，
   CSV 檔案內容完整正確。
-- 既有呼叫（不帶 `to_file`）行為完全不變：既有 39 個測試全綠，
-  並為新路徑補測試（CSV 寫出、preview 截斷、舊檔清理）。
+- `to_file=true` 的 CSV、preview 與舊檔清理需維持測試覆蓋；inline 模式另有
+  pagination contract tests。
 - 廠內實測：CSV 用 Excel 直開中文欄位正常。
   （第二階段 PNG 圖表驗收標準已隨 `plot_csv` 於 2026-07-06 移除，不適用
   ——見上方實作狀態段落與 §8.3 第 4 點。）
@@ -459,8 +484,9 @@ preview +（GMS）per-tag summary」；且 docstring 必須明確警告 agent
 
 - id 不可猜測（128 bit token），但**不需要額外認證**——同一個內網網段
   內，任何人只要在 TTL 到期前取得這個 URL，就能下載那一個檔案。這是
-  刻意接受的風險：部署環境是隔離內網（見 §1「部署環境」），跟現有
-  SSE transport 無認證、預設 bind `0.0.0.0`（§7 第 6 項）的風險等級一致。
+  刻意接受的風險：部署環境是隔離內網（見 §1「部署環境」）。MCP 的
+  Streamable HTTP endpoint 現在已有 bearer auth，但獨立 download server
+  仍維持 capability URL 模型，兩者安全邊界不同。
   **如果未來部署環境改變（例如接上更大的內部網路或有其他租戶），這個
   假設要重新評估。**
 - 未來若要加強，可以在 HTTP 請求上加一個 shared-secret header（下載

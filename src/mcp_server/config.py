@@ -41,6 +41,126 @@ def _load() -> dict[str, Any]:
 
 _config: dict[str, Any] = _load()
 
+# ── Tool registration profiles ────────────────────────────────────────────
+
+TOOL_CATEGORIES = frozenset(
+    {"filesystem", "database", "custom", "api", "presentation", "gms"}
+)
+TOOL_PROFILES: dict[str, frozenset[str]] = {
+    "all": TOOL_CATEGORIES,
+    "core": frozenset({"filesystem", "database", "custom", "api"}),
+    "gms": frozenset({"custom", "gms"}),
+    "presentation": frozenset({"custom", "presentation"}),
+    "minimal": frozenset({"custom"}),
+}
+
+_tools_cfg: Any = _config.get("tools", {})
+_tool_profile: Any = (
+    _tools_cfg.get("profile", "all") if isinstance(_tools_cfg, dict) else "all"
+)
+_enabled_categories: Any = (
+    _tools_cfg.get("enabled_categories") if isinstance(_tools_cfg, dict) else None
+)
+
+
+def get_enabled_tool_categories() -> frozenset[str]:
+    """Return categories that should be registered for this process.
+
+    Invalid values fall back to the backwards-compatible ``all`` profile here;
+    validate_config() reports and rejects them before the transport starts.
+    An explicit enabled_categories list overrides the selected profile.
+    """
+    if _enabled_categories is not None:
+        if (
+            isinstance(_enabled_categories, list)
+            and all(isinstance(item, str) for item in _enabled_categories)
+            and set(_enabled_categories) <= TOOL_CATEGORIES
+        ):
+            return frozenset(_enabled_categories)
+        return TOOL_PROFILES["all"]
+    if isinstance(_tool_profile, str) and _tool_profile in TOOL_PROFILES:
+        return TOOL_PROFILES[_tool_profile]
+    return TOOL_PROFILES["all"]
+
+
+# ── HTTP transport ────────────────────────────────────────────────────────
+
+_http_cfg: Any = _config.get("http", {})
+_http_host: Any = (
+    _http_cfg.get("host", "127.0.0.1")
+    if isinstance(_http_cfg, dict)
+    else "127.0.0.1"
+)
+_http_port: Any = (
+    _http_cfg.get("port", 8080) if isinstance(_http_cfg, dict) else 8080
+)
+_http_allowed_hosts: Any = (
+    _http_cfg.get(
+        "allowed_hosts", ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+    )
+    if isinstance(_http_cfg, dict)
+    else []
+)
+_http_allowed_origins: Any = (
+    _http_cfg.get(
+        "allowed_origins",
+        ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"],
+    )
+    if isinstance(_http_cfg, dict)
+    else []
+)
+_http_bearer_token_env: Any = (
+    _http_cfg.get("bearer_token_env", "MCP_HTTP_BEARER_TOKEN")
+    if isinstance(_http_cfg, dict)
+    else "MCP_HTTP_BEARER_TOKEN"
+)
+
+
+def get_http_config() -> dict[str, Any]:
+    """Return validated-at-startup HTTP transport settings."""
+    token = (
+        os.environ.get(_http_bearer_token_env, "")
+        if isinstance(_http_bearer_token_env, str) and _http_bearer_token_env
+        else ""
+    )
+    return {
+        "host": _http_host,
+        "port": _http_port,
+        "allowed_hosts": list(_http_allowed_hosts)
+        if isinstance(_http_allowed_hosts, list)
+        else [],
+        "allowed_origins": list(_http_allowed_origins)
+        if isinstance(_http_allowed_origins, list)
+        else [],
+        "bearer_token_env": _http_bearer_token_env,
+        "bearer_token": token,
+    }
+
+
+def validate_http_runtime(host: str, port: int, *, transport: str) -> None:
+    """Reject unsafe runtime combinations after CLI overrides are known."""
+    loopback = host in {"127.0.0.1", "localhost", "::1"}
+    http = get_http_config()
+    if isinstance(port, bool) or not 1 <= port <= 65535:
+        raise ConfigError("HTTP port must be an integer between 1 and 65535.")
+    if (
+        transport == "streamable-http"
+        and http["bearer_token"]
+        and len(http["bearer_token"]) < 32
+    ):
+        raise ConfigError("HTTP bearer token must contain at least 32 characters.")
+    if transport == "sse" and not loopback:
+        raise ConfigError(
+            "Deprecated SSE transport is restricted to localhost. Use streamable-http "
+            "for network clients."
+        )
+    if transport == "streamable-http" and not loopback and not http["bearer_token"]:
+        raise ConfigError(
+            "Non-local Streamable HTTP requires bearer authentication. Set "
+            "[http] bearer_token_env to an environment-variable name and define a "
+            "strong token in that environment variable."
+        )
+
 # ── Filesystem helpers ─────────────────────────────────────────────────────
 
 _allowed_paths: list[pathlib.Path] = [
@@ -131,6 +251,7 @@ _db_connections: dict[str, str] = (
     _config.get("database", {}).get("connections", {})
 )
 _db_pool_size: int = _config.get("database", {}).get("pool_size", 5)
+_db_access: dict[str, Any] = _config.get("database", {}).get("access", {})
 
 
 def get_db_pool_size() -> int:
@@ -155,6 +276,21 @@ def resolve_db(name: str) -> str:
             "Add entries under [database.connections] in config.toml."
         )
     return _db_connections[name]
+
+
+def check_db_write(name: str, *, script: bool = False) -> None:
+    """Require explicit per-alias permission for database writes."""
+    policy = _db_access.get(name, {})
+    if not isinstance(policy, dict) or policy.get("read_only", True):
+        raise ToolError(
+            f"Database '{name}' is read-only. Set read_only = false under "
+            f"[database.access.{name}] to enable INSERT/UPDATE/DELETE."
+        )
+    if script and not policy.get("allow_scripts", False):
+        raise ToolError(
+            f"SQL scripts are disabled for database '{name}'. Set allow_scripts = true "
+            f"under [database.access.{name}] only if multi-statement execution is required."
+        )
 
 
 def is_postgres(dsn: str) -> bool:
@@ -238,6 +374,59 @@ def validate_config() -> list[str]:
             "No config.toml was loaded — all filesystem and database access is denied."
         )
 
+    # Tool registration: profile supplies a preset; enabled_categories, when
+    # present, is an exact override. Validate both even when the override is
+    # used so stale or misspelled configuration never goes unnoticed.
+    if not isinstance(_tools_cfg, dict):
+        errors.append("tools must be a table.")
+    else:
+        if not isinstance(_tool_profile, str) or _tool_profile not in TOOL_PROFILES:
+            errors.append(
+                "tools.profile must be one of: " + ", ".join(sorted(TOOL_PROFILES)) + "."
+            )
+        if _enabled_categories is not None:
+            if not isinstance(_enabled_categories, list) or not all(
+                isinstance(item, str) for item in _enabled_categories
+            ):
+                errors.append("tools.enabled_categories must be an array of strings.")
+            else:
+                unknown = sorted(set(_enabled_categories) - TOOL_CATEGORIES)
+                if unknown:
+                    errors.append(
+                        "tools.enabled_categories contains unknown categories: "
+                        + ", ".join(unknown)
+                        + "."
+                    )
+                if len(_enabled_categories) != len(set(_enabled_categories)):
+                    errors.append("tools.enabled_categories must not contain duplicates.")
+                if not _enabled_categories:
+                    warnings.append(
+                        "tools.enabled_categories is empty — the server will expose no tools."
+                    )
+
+    # Streamable HTTP defaults to localhost and validates Host/Origin headers.
+    if not isinstance(_http_cfg, dict):
+        errors.append("http must be a table.")
+    else:
+        if not isinstance(_http_host, str) or not _http_host.strip():
+            errors.append("http.host must be a non-empty string.")
+        if (
+            not isinstance(_http_port, int)
+            or isinstance(_http_port, bool)
+            or not 1 <= _http_port <= 65535
+        ):
+            errors.append("http.port must be an integer between 1 and 65535.")
+        for name, value in (
+            ("allowed_hosts", _http_allowed_hosts),
+            ("allowed_origins", _http_allowed_origins),
+        ):
+            if not isinstance(value, list) or not value or not all(
+                isinstance(item, str) and item.strip() for item in value
+            ):
+                errors.append(f"http.{name} must be a non-empty array of strings.")
+        if not isinstance(_http_bearer_token_env, str):
+            errors.append("http.bearer_token_env must be a string.")
+
     # Filesystem: every configured allowed_path must exist and be a directory.
     # (_export_dir is also appended to _allowed_paths for check_path() access,
     # but it's validated separately below with a clearer message, so skip it here.)
@@ -258,8 +447,8 @@ def validate_config() -> list[str]:
 
     if not _allowed_paths and not _db_connections:
         warnings.append(
-            "No filesystem paths and no databases are configured — "
-            "only the custom utility tools will be usable."
+            "No filesystem paths and no databases are configured — tools that "
+            "depend on those resources will not be usable."
         )
 
     # Database: validate the shape of each connection string. SQLite paths must
@@ -268,6 +457,25 @@ def validate_config() -> list[str]:
         errors.append(
             f"database.pool_size must be a positive integer, got {_db_pool_size!r}."
         )
+    if not isinstance(_db_access, dict):
+        errors.append("database.access must be a table keyed by database alias.")
+    else:
+        for name, policy in _db_access.items():
+            if name not in _db_connections:
+                errors.append(f"database.access contains unknown database alias '{name}'.")
+                continue
+            if not isinstance(policy, dict):
+                errors.append(f"database.access.{name} must be a table.")
+                continue
+            for option in ("read_only", "allow_scripts"):
+                if option in policy and not isinstance(policy[option], bool):
+                    errors.append(
+                        f"database.access.{name}.{option} must be true or false."
+                    )
+            if policy.get("read_only", True) and policy.get("allow_scripts", False):
+                errors.append(
+                    f"database.access.{name}.allow_scripts cannot be true when read_only is true."
+                )
     for name, dsn in _db_connections.items():
         if not isinstance(dsn, str) or not dsn.strip():
             errors.append(f"database.connections['{name}'] is empty or not a string")
@@ -318,6 +526,44 @@ def validate_config() -> list[str]:
         base_url = svc.get("base_url")
         if not isinstance(base_url, str) or not base_url.strip():
             errors.append(f"api.services['{name}'] is missing a non-empty 'base_url'")
+        methods = svc.get("allowed_methods", ["GET"])
+        supported_methods = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+        if not isinstance(methods, list) or not methods or not all(
+            isinstance(method, str) and method.upper() in supported_methods
+            for method in methods
+        ):
+            errors.append(
+                f"api.services['{name}'].allowed_methods must be a non-empty array "
+                "containing only GET, POST, PUT, PATCH, or DELETE"
+            )
+        prefixes = svc.get("allowed_path_prefixes", ["/"])
+        if not isinstance(prefixes, list) or not prefixes or not all(
+            isinstance(prefix, str) and prefix.startswith("/") for prefix in prefixes
+        ):
+            errors.append(
+                f"api.services['{name}'].allowed_path_prefixes must be a non-empty "
+                "array of paths beginning with '/'"
+            )
+        timeout = svc.get("timeout_seconds", 30)
+        if (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or not 0 < timeout <= 120
+        ):
+            errors.append(
+                f"api.services['{name}'].timeout_seconds must be greater than 0 "
+                "and no more than 120"
+            )
+        max_body = svc.get("max_request_body_bytes", 100_000)
+        if (
+            not isinstance(max_body, int)
+            or isinstance(max_body, bool)
+            or not 1 <= max_body <= 1_000_000
+        ):
+            errors.append(
+                f"api.services['{name}'].max_request_body_bytes must be an integer "
+                "between 1 and 1000000"
+            )
 
     if errors:
         raise ConfigError(

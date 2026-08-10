@@ -1,5 +1,7 @@
 # MCP Server
 
+[![CI](https://github.com/jjaass9507/MCP_server/actions/workflows/ci.yml/badge.svg)](https://github.com/jjaass9507/MCP_server/actions/workflows/ci.yml)
+
 A modular Python MCP (Model Context Protocol) server that exposes several categories of tools to AI clients:
 
 - **Filesystem** — read, write, list, search, and inspect files
@@ -17,6 +19,16 @@ pip install -e .
 
 Requires Python 3.11+.
 
+The core install supports SQLite without a separate driver. Install only the
+drivers used by your configured database aliases:
+
+```bash
+pip install -e '.[postgres]'       # PostgreSQL
+pip install -e '.[sqlserver]'      # SQL Server
+pip install -e '.[oracle]'         # Oracle
+pip install -e '.[databases]'      # all three (required by the GMS profile)
+```
+
 ## Configuration
 
 Copy the example config and edit it before starting the server:
@@ -26,6 +38,20 @@ cp config.toml.example config.toml
 ```
 
 ```toml
+[tools]
+# all (default), core, gms, presentation, or minimal.
+# Use enabled_categories for an exact override; see config.toml.example.
+profile = "core"
+
+[http]
+# Streamable HTTP uses /mcp and binds to localhost by default.
+host = "127.0.0.1"
+port = 8080
+allowed_hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+allowed_origins = ["http://127.0.0.1:*", "http://localhost:*"]
+# The token value comes from this environment variable, never from TOML.
+bearer_token_env = "MCP_HTTP_BEARER_TOKEN"
+
 [filesystem]
 # Directories the model is allowed to access (absolute paths).
 # Empty list = all access denied.
@@ -57,6 +83,11 @@ dir = "/home/user/data/mcp_exports"
 serve_downloads = false
 ```
 
+Tool profiles reduce the number of schemas sent to the model. The default
+`all` profile preserves the previous behavior. `core` enables filesystem,
+database, custom, and API tools; `gms` and `presentation` enable only that
+domain plus custom utilities; `minimal` exposes custom utilities only.
+
 You can point to a custom config location with the `MCP_CONFIG` environment variable:
 
 ```bash
@@ -69,9 +100,15 @@ MCP_CONFIG=/etc/mcp/config.toml python -m mcp_server.server
 # stdio transport (for Claude Desktop, MCP Inspector)
 python -m mcp_server.server
 
-# SSE / HTTP transport (for Open WebUI, Ollama, web clients)
-python -m mcp_server.server --transport sse --host 0.0.0.0 --port 8080
+# Streamable HTTP transport (endpoint: http://127.0.0.1:8080/mcp)
+python -m mcp_server.server --transport streamable-http
 ```
+
+Binding Streamable HTTP beyond localhost requires a strong bearer token in
+`MCP_HTTP_BEARER_TOKEN`, plus matching `allowed_hosts` and (for browser clients)
+`allowed_origins`; clients send it as `Authorization: Bearer <token>`. Legacy
+`sse` remains available only on localhost for client migration and logs a
+deprecation warning.
 
 ## Client Setup
 
@@ -95,14 +132,14 @@ Restart Claude Desktop after saving.
 
 ### Open WebUI + Ollama (地端模型)
 
-Open WebUI supports MCP via SSE transport:
+For Open WebUI versions with Streamable HTTP support:
 
-1. Start the server in SSE mode:
+1. Start the server in Streamable HTTP mode:
    ```bash
-   python -m mcp_server.server --transport sse --port 8080
+   python -m mcp_server.server --transport streamable-http --port 8080
    ```
 2. In Open WebUI → **Settings → Tools** → add a new tool server:
-   - URL: `http://localhost:8080/sse`
+   - URL: `http://localhost:8080/mcp`
 3. Enable the tool server for your model session.
 
 > **Note:** The MCP server itself is model-agnostic. The same server code works with Claude, Ollama, LM Studio (via mcp-proxy), or any agent framework that supports MCP tool calling. Only the client configuration differs.
@@ -125,8 +162,8 @@ All filesystem tools check that the path is inside `allowed_paths` from config.t
 |------|-------------|
 | `read_file(path)` | Read text file contents (truncates at 1 MB) |
 | `write_file(path, content, mode)` | Write or append — requires `allow_write = true` |
-| `list_directory(path, recursive)` | List directory entries with metadata |
-| `search_files(directory, pattern, recursive)` | Glob-search for files |
+| `list_directory(path, recursive, limit, cursor)` | List directory entries with metadata using bounded pages |
+| `search_files(directory, pattern, recursive, limit, cursor)` | Glob-search for files using bounded pages |
 | `file_info(path)` | Get file/directory metadata |
 | `delete_file(path)` | Delete a file — requires `allow_write = true` |
 
@@ -136,13 +173,14 @@ Tools use a `db_name` alias from `config.toml` instead of a raw file path. Call 
 
 | Tool | Description |
 |------|-------------|
-| `db_list_databases()` | List configured database names |
-| `db_query(db_name, sql, params)` | SELECT query, returns rows as dicts |
+| `db_list_databases()` | List configured database names as `{databases, count}` |
+| `db_query(db_name, sql, params, limit, cursor)` | SELECT query, returns a bounded page of row dicts |
 | `db_execute(db_name, sql, params)` | INSERT / UPDATE / DELETE |
-| `db_list_tables(db_name)` | List all tables |
-| `db_table_schema(db_name, table_name)` | Get column definitions |
+| `db_list_schemas(db_name, limit, cursor)` | List schemas using bounded pages |
+| `db_list_tables(db_name, schema, limit, cursor)` | List tables using bounded pages |
+| `db_table_schema(db_name, table_name)` | Get column definitions as `{columns, count}` |
 | `db_execute_script(db_name, script)` | Run a multi-statement SQL script |
-| `db_query_to_file(db_name, sql, params, filename)` | Like `db_query`, but writes the full result to a CSV in the export directory and returns only `{path, columns, row_count, preview (first 5 rows), size_kb}` — use for large result sets instead of `db_query`. When `[export] serve_downloads` is enabled, the result also includes a time-limited `download_url` for a different machine's MCP server to stream the CSV over HTTP |
+| `db_query_to_file(db_name, sql, params, filename)` | Streams the full result to CSV in bounded batches and returns only `{path, columns, row_count, preview (first 5 rows), size_kb}` — use for large result sets instead of paging through `db_query`. When `[export] serve_downloads` is enabled, the result also includes a time-limited `download_url` for a different machine's MCP server to stream the CSV over HTTP |
 
 ### GMS (compressed-air point/tag/value queries)
 
@@ -156,12 +194,17 @@ compressed-air queries; fall back to `db_query` for anything ad-hoc.
 
 | Tool | Description |
 |------|-------------|
-| `gms_list_equipment(building, category, equipment_type, floor)` | List equipment from the PostgreSQL master (all filters optional) |
-| `gms_list_points(building, device_id, category, equipment_type, keyword)` | List monitoring points/tags for one device; `category` (broad, e.g. 空壓機/乾燥機/真空機) and/or `equipment_type` (specific, e.g. 離心機/變頻螺旋機) disambiguate duplicate `device_id`s |
-| `gms_list_pipe_points(building, system_name)` | List pipe-network points (HCDA/LCDA/HVAC) |
-| `gms_realtime_values(building, tag_names)` | Latest SCADA value for a list of already-known tags. Pure Oracle value lookup — resolve `tag_names` via `gms_list_points` first, it does not search by device_id/category/keyword |
-| `gms_history_values(building, start_time, end_time, tag_names, to_file)` | Historical value series for a list of already-known tags, clamped to a 1-day window, with per-tag max/min/latest summary (computed over numerically usable samples only — the historian's VALUE column is text and may hold NULLs or non-numeric readings; a window with no usable sample reports `summary: null`). Same tag_names-only contract as `gms_realtime_values`. With `to_file=true`, the series is written to one CSV (all tags combined) under the export directory instead of being embedded, and the response keeps only the per-tag summary plus file info (including a `download_url` when `[export] serve_downloads` is enabled) |
-| `gms_history_aggregate(building, start_time, end_time, tag_names, bucket, aggs, to_file)` | Downsampled history for long-range analysis: buckets the raw per-minute series in Oracle (`GROUP BY` time bucket) so the response scales with bucket count, not range length. `bucket` is `15m`/`1h`/`1d`; `aggs` multi-selects from `avg`/`min`/`max`/`last`/`first`/`count` (each becomes a column, `last`/`first` are newest/oldest-in-time not largest/smallest). Same tag_names-only contract; prefer over `gms_history_values` for ranges beyond a day. Inline results exceeding a few thousand (tag × bucket) rows require `to_file=true` |
+| `gms_list_equipment(..., limit, cursor)` | List equipment from the PostgreSQL master (all filters optional) using bounded pages |
+| `gms_list_points(..., limit, cursor)` | List monitoring points/tags for one device using bounded pages; category/type filters disambiguate duplicate device IDs |
+| `gms_list_pipe_points(..., limit, cursor)` | List pipe-network points (HCDA/LCDA/HVAC) using bounded pages |
+| `gms_realtime_values(..., limit, cursor)` | Latest SCADA values for already-known tags using bounded pages |
+| `gms_history_values(..., to_file, limit, cursor)` | Historical samples, clamped to one day. Inline mode returns paged sample `items` plus per-tag `summaries`; file mode writes the complete series to CSV |
+| `gms_history_aggregate(..., bucket, aggs, to_file, limit, cursor)` | Oracle-side downsampled history. Inline buckets are paged; file mode writes all buckets to CSV |
+
+All bounded inline tools return `{items, count, truncated, next_cursor}`. The
+default `limit` is 100 and the maximum is 1000. When `truncated` is true, call
+the same tool with the same filters and `cursor=next_cursor`. Cursors are bound
+to the original tool arguments and cannot be reused with a different query.
 
 ### API (external HTTP)
 
@@ -171,11 +214,15 @@ never exposed to the model. Call `api_list_services()` first to see what's avail
 
 | Tool | Description |
 |------|-------------|
-| `api_list_services()` | List configured API service names |
+| `api_list_services()` | List configured API service names as `{services, count}` |
 | `api_request(service, method, path, query, json_body)` | Make an HTTP request to a named service; returns `{status, body}` |
 | `push_notify(service, title, content, image_path, push_to_list)` | Send a Push+ notification; fills the template's `$_title` / `$_content` (content may be inline HTML). `image_path` embeds an image file as inline base64 — the server encodes it, so you never paste base64 yourself |
 
 The `token`/`api_key` is read from the service's `config.toml` block and never exposed to the model. For an internal service whose TLS certificate is not publicly trusted, set `verify = false` in its service block to skip certificate verification.
+
+Generic services default to GET-only. Configure `allowed_methods` and narrow
+`allowed_path_prefixes` per service before enabling writes; `timeout_seconds`
+(maximum 120) and `max_request_body_bytes` (maximum 1 MB) bound each request.
 
 ### Custom / Utility
 
@@ -203,6 +250,14 @@ docker compose ps
 docker compose logs -f
 ```
 
+The default image contains the SQLite-only core. Set `MCP_EXTRAS` when the
+deployment uses another database, for example:
+
+```bash
+MCP_EXTRAS=oracle docker compose build
+MCP_HTTP_BEARER_TOKEN='replace-with-at-least-32-characters' docker compose up -d
+```
+
 The container mounts `./config.toml` as read-only at `/config/config.toml` and
 persists data in a named volume `mcp-data`. To write logs to a file, set
 `MCP_LOG_FILE=/data/mcp_server.log` in `docker-compose.yml`.
@@ -213,6 +268,7 @@ persists data in a named volume `mcp-data`. To write logs to a file, set
 # Run once as root — creates service user, installs to /opt/mcp-server,
 # copies config template to /etc/mcp/config.toml, and enables the service.
 sudo bash deploy/install-systemd.sh
+# Or, for Oracle: sudo env MCP_EXTRAS=oracle bash deploy/install-systemd.sh
 
 # Edit the config before starting
 sudo nano /etc/mcp/config.toml
@@ -231,15 +287,17 @@ run the **same OS and Python version** (wheels are platform-specific).
 ```powershell
 # 1. On the ONLINE dev machine (code already on the latest main):
 git pull
-.\scripts\pack_offline.ps1        # produces ..\mcp-server-offline.zip
+.\scripts\pack_offline.ps1        # SQLite-only; produces ..\mcp-server-offline.zip
+# Or include drivers: .\scripts\pack_offline.ps1 -Extras databases
 
 # 2. Copy the zip to the OFFLINE target, unzip it, then:
 .\scripts\install_offline.ps1     # creates .venv, installs all wheels
 copy config.toml.example config.toml   # then edit config.toml
 ```
 
-`pack_offline.ps1` reads dependencies straight from `pyproject.toml`, so any
-package you add later is bundled automatically — no need to edit the script.
+`pack_offline.ps1` reads core dependencies and the selected database extra
+straight from `pyproject.toml`; the offline installer automatically installs
+the same selection.
 `install_offline.ps1` points the venv at the live `src/` tree, so afterwards a
 plain `git pull` (or unzipping a newer bundle) updates the server with no
 reinstall — unless `pyproject.toml` dependencies changed, in which case re-run
@@ -257,6 +315,15 @@ Logging is configured with environment variables (not config.toml):
 Logs always go to **stderr** to keep stdout clean for the stdio transport.
 Write operations (`write_file`, `delete_file`, `db_execute`, `db_execute_script`)
 are logged at INFO level for auditing.
+
+Database aliases are read-only by default. Enable writes explicitly per alias;
+script execution remains a separate opt-in:
+
+```toml
+[database.access.mydb]
+read_only = false
+allow_scripts = false
+```
 
 ## Adding New Tools
 

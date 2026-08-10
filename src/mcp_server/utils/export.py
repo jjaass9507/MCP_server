@@ -9,7 +9,9 @@ import pathlib
 import re
 import secrets
 import time
+from collections.abc import Iterable, Mapping
 from datetime import datetime
+from typing import Any
 
 _SAFE_CHARS_RE = re.compile(r"[^A-Za-z0-9_\-]")
 _MAX_AGE_DAYS = 7
@@ -62,7 +64,11 @@ def cleanup_old_exports(export_dir: pathlib.Path, max_age_days: int = _MAX_AGE_D
             pass
 
 
-def write_csv(path: pathlib.Path, columns: list[str], rows: list[dict]) -> None:
+def write_csv(
+    path: pathlib.Path,
+    columns: list[str],
+    rows: Iterable[Mapping[str, Any]],
+) -> None:
     """Write rows to path as CSV with a utf-8-sig BOM.
 
     utf-8-sig lets Windows Excel open the file directly with Chinese text
@@ -78,7 +84,7 @@ def write_csv(path: pathlib.Path, columns: list[str], rows: list[dict]) -> None:
 def export_csv(
     export_dir: pathlib.Path,
     columns: list[str],
-    rows: list[dict],
+    rows: Iterable[Mapping[str, Any]],
     filename: str = "",
 ) -> pathlib.Path:
     """Clean up stale exports, then write rows to a new CSV in export_dir.
@@ -89,3 +95,37 @@ def export_csv(
     path = export_dir / sanitize_filename(filename, "csv")
     write_csv(path, columns, rows)
     return path
+
+
+def export_csv_batches(
+    export_dir: pathlib.Path,
+    columns: list[str],
+    batches: Iterable[Iterable[Mapping[str, Any]]],
+    filename: str = "",
+    preview_limit: int = 5,
+) -> tuple[pathlib.Path, int, list[dict[str, Any]]]:
+    """Stream row batches to a CSV and retain only a small preview.
+
+    The partially written file is removed if fetching or writing fails.
+    """
+    cleanup_old_exports(export_dir)
+    path = export_dir / sanitize_filename(filename, "csv")
+    row_count = 0
+    preview: list[dict[str, Any]] = []
+    try:
+        with path.open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
+            writer.writeheader()
+            for batch in batches:
+                for row in batch:
+                    writer.writerow(row)
+                    row_count += 1
+                    if len(preview) < preview_limit:
+                        preview.append(dict(row))
+    except Exception:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return path, row_count, preview

@@ -16,9 +16,10 @@ HOW TO ADD A NEW API
    endpoint so the model knows how to call it.
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import base64
+import json
 import mimetypes
 import pathlib
 
@@ -40,9 +41,57 @@ _MAX_BODY_BYTES = 100_000
 # Reject oversized images early — a multi-MB base64 blob bloats the request and
 # is usually rejected by the push backend anyway.
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
+_DEFAULT_MAX_REQUEST_BODY_BYTES = 100_000
+
+HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 
 
-def _response_payload(resp: httpx.Response) -> dict:
+def _path_is_allowed(path: str, prefixes: list[str]) -> bool:
+    normalized = "/" + path.lstrip("/")
+    for prefix in prefixes:
+        normalized_prefix = "/" + prefix.lstrip("/")
+        if normalized_prefix == "/":
+            return True
+        base = normalized_prefix.rstrip("/")
+        if normalized == base or normalized.startswith(base + "/"):
+            return True
+    return False
+
+
+def _check_request_policy(
+    svc: dict[str, Any], method: str, path: str, json_body: Any
+) -> None:
+    allowed_methods = [
+        item.upper() for item in svc.get("allowed_methods", ["GET"])
+    ]
+    if method not in allowed_methods:
+        raise ToolError(
+            f"HTTP method {method} is not allowed for this service. "
+            f"Allowed methods: {allowed_methods}."
+        )
+
+    prefixes = svc.get("allowed_path_prefixes", ["/"])
+    if not _path_is_allowed(path, prefixes):
+        raise ToolError(
+            f"API path '/{path.lstrip('/')}' is outside this service's allowed_path_prefixes."
+        )
+
+    if json_body is None:
+        return
+    try:
+        encoded = json.dumps(
+            json_body, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+    except (TypeError, ValueError) as e:
+        raise ToolError(f"json_body is not JSON serializable: {e}") from e
+    max_bytes = svc.get("max_request_body_bytes", _DEFAULT_MAX_REQUEST_BODY_BYTES)
+    if len(encoded) > max_bytes:
+        raise ToolError(
+            f"JSON request body is too large ({len(encoded)} bytes, limit {max_bytes})."
+        )
+
+
+def _response_payload(resp: httpx.Response) -> dict[str, Any]:
     """Build the {"status", "body"} result from an httpx response.
 
     Parses JSON when possible, falls back to text, and truncates oversized bodies.
@@ -96,7 +145,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         raise ToolError(f"Please specify service. Available: {', '.join(names)}")
 
     @mcp.tool()
-    def api_list_services() -> str:
+    def api_list_services() -> dict[str, Any]:
         """List the names of all API services configured in config.toml.
 
         Use one of the returned names as the service parameter in api_request().
@@ -107,16 +156,16 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                 "No API services are configured. "
                 "Add entries under [api.services] in config.toml."
             )
-        return f"Available API services: {', '.join(names)}. Use one of these as the service parameter."
+        return {"services": names, "count": len(names)}
 
     @mcp.tool()
     def api_request(
         service: str = "",
-        method: str = "GET",
+        method: HttpMethod = "GET",
         path: str = "",
         query: dict = {},
         json_body: Any = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Make an HTTP request to a named API service.
 
         The service's base_url and authentication header are injected from
@@ -127,12 +176,15 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
         Args:
             service:   API service name from config.toml. Auto-selected if only one is configured.
-            method:    HTTP method (GET, POST, PUT, PATCH, DELETE). Default: GET.
+            method:    HTTP method (GET, POST, PUT, PATCH, DELETE). The service
+                       must explicitly allow non-GET methods. Default: GET.
             path:      Path appended to the service base_url (e.g. '/weather').
             query:     Optional query-string parameters as a dict.
             json_body: Optional JSON request body (for POST/PUT/PATCH).
         """
         svc = cfg.resolve_api(_resolve_service_name(service))
+        method = method.upper()
+        _check_request_policy(svc, method, path, json_body)
 
         headers = dict(svc.get("headers", {}))
         if svc.get("api_key"):
@@ -143,7 +195,10 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         url = svc["base_url"].rstrip("/") + "/" + path.lstrip("/")
 
         try:
-            with httpx.Client(timeout=30, verify=svc.get("verify", True)) as client:
+            with httpx.Client(
+                timeout=svc.get("timeout_seconds", 30),
+                verify=svc.get("verify", True),
+            ) as client:
                 resp = client.request(
                     method.upper(),
                     url,
@@ -168,7 +223,7 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
 
     @mcp.tool()
     def push_notify(service: str = "", title: str = "", content: str = "",
-                    image_path: str = "", push_to_list: list = []) -> dict:
+                    image_path: str = "", push_to_list: list = []) -> dict[str, Any]:
         """Send a push notification via a configured Push+ service (email / group).
 
         ALWAYS format `content` as clean inline HTML for a polished result — never

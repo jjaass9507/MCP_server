@@ -1,4 +1,4 @@
-# systemd service file for the MCP Server (SSE transport).
+# systemd service file for the MCP Server (Streamable HTTP transport).
 #
 # Installation:
 #   sudo cp deploy/mcp-server.service /etc/systemd/system/
@@ -11,7 +11,7 @@
 #   sudo systemctl restart mcp-server
 
 [Unit]
-Description=MCP Server (SSE transport)
+Description=MCP Server (Streamable HTTP transport)
 Documentation=https://github.com/jjaass9507/MCP_server
 After=network.target
 
@@ -27,12 +27,14 @@ WorkingDirectory=/opt/mcp-server
 
 # Activate the project virtualenv if one exists, otherwise use the system Python.
 ExecStart=/opt/mcp-server/.venv/bin/mcp-server \
-    --transport sse \
+    --transport streamable-http \
     --host 0.0.0.0 \
     --port 8080
 
 Environment=MCP_CONFIG=/etc/mcp/config.toml
 Environment=MCP_LOG_LEVEL=INFO
+# Store MCP_HTTP_BEARER_TOKEN in this root-owned file (mode 0600).
+EnvironmentFile=/etc/mcp/mcp-server.env
 # Uncomment to write logs to a file in addition to journald:
 # Environment=MCP_LOG_FILE=/var/log/mcp-server/mcp.log
 
