@@ -100,6 +100,48 @@ def test_pool_connect_failure_releases_capacity():
     assert attempts == 2
 
 
+class _FakeConnection:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def test_pool_close_closes_idle_connections():
+    pool = _ConnPool(_FakeConnection, max_size=2)
+    conn = pool.acquire()
+    pool.release(conn, healthy=True)
+
+    assert pool.close() == 1
+    assert conn.closed is True
+    with pytest.raises(RuntimeError, match="pool is closed"):
+        pool.acquire()
+
+
+def test_pool_close_closes_borrowed_connection_when_released():
+    pool = _ConnPool(_FakeConnection, max_size=1)
+    conn = pool.acquire()
+
+    assert pool.close() == 0
+    assert conn.closed is False
+    pool.release(conn, healthy=True)
+    assert conn.closed is True
+
+
+def test_close_all_pools_closes_and_unregisters_connections():
+    database.close_all_pools()
+    conn = _FakeConnection()
+    pool = _ConnPool(lambda: conn, max_size=1)
+    database._pools["postgresql://test"] = pool
+    pool.release(pool.acquire(), healthy=True)
+
+    database.close_all_pools()
+
+    assert conn.closed is True
+    assert database._pools == {}
+
+
 def test_sqlite_connect_error_preserves_original_error(monkeypatch):
     def fail_connect(_path):
         raise sqlite3.OperationalError("cannot open database")
