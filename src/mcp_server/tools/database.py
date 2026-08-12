@@ -44,13 +44,16 @@ class _ConnPool:
         self._idle: queue.Queue = queue.Queue()
         self._created = 0
         self._lock = threading.Lock()
+        self._closed = False
 
     def acquire(self, timeout: float = 30.0) -> Any:
-        try:
-            return self._idle.get_nowait()
-        except queue.Empty:
-            pass
         with self._lock:
+            if self._closed:
+                raise RuntimeError("Database connection pool is closed.")
+            try:
+                return self._idle.get_nowait()
+            except queue.Empty:
+                pass
             if self._created < self._max_size:
                 self._created += 1
                 try:
@@ -68,15 +71,35 @@ class _ConnPool:
             ) from None
 
     def release(self, conn: Any, healthy: bool) -> None:
-        if healthy:
-            self._idle.put(conn)
-            return
         with self._lock:
+            if healthy and not self._closed:
+                self._idle.put(conn)
+                return
             self._created -= 1
         try:
             conn.close()
         except Exception:
             pass
+
+    def close(self) -> int:
+        """Close all idle connections and close borrowed ones when returned."""
+        with self._lock:
+            if self._closed:
+                return 0
+            self._closed = True
+            idle = []
+            while True:
+                try:
+                    idle.append(self._idle.get_nowait())
+                except queue.Empty:
+                    break
+            self._created -= len(idle)
+        for conn in idle:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return len(idle)
 
 
 _pools_lock = threading.Lock()
@@ -90,6 +113,20 @@ def _get_pool(dsn: str, connect: Callable[[], Any], max_size: int) -> _ConnPool:
             pool = _ConnPool(connect, max_size)
             _pools[dsn] = pool
         return pool
+
+
+def close_all_pools() -> None:
+    """Close and unregister every database connection pool."""
+    with _pools_lock:
+        pools = list(_pools.values())
+        _pools.clear()
+    closed_connections = sum(pool.close() for pool in pools)
+    if pools:
+        logger.info(
+            "Closed %d database connection pool(s) and %d idle connection(s).",
+            len(pools),
+            closed_connections,
+        )
 
 
 # ── connection context managers ───────────────────────────────────────────────
@@ -181,6 +218,7 @@ def _mssql_conn(dsn: str, cfg: "_CfgModule"):
         cfg.get_db_pool_size(),
     )
     conn = None
+    cur = None
     healthy = False
     try:
         conn = pool.acquire()
@@ -195,6 +233,11 @@ def _mssql_conn(dsn: str, cfg: "_CfgModule"):
     except TimeoutError as e:
         raise ToolError(str(e)) from e
     finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                healthy = False
         if conn is not None:
             pool.release(conn, healthy)
 

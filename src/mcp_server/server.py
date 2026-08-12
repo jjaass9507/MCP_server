@@ -161,17 +161,20 @@ def main() -> None:
     if args.transport in {"sse", "streamable-http"}:
         app.settings.host = host
         app.settings.port = port
-    if args.transport == "streamable-http":
-        _run_streamable_http(app, http["bearer_token"])
-    elif args.transport == "sse":
-        logger.warning(
-            "SSE transport is deprecated; migrate clients to http://%s:%s/mcp.",
-            app.settings.host,
-            app.settings.port,
-        )
-        app.run(transport="sse")
-    else:
-        app.run(transport="stdio")
+    try:
+        if args.transport == "streamable-http":
+            _run_streamable_http(app, http["bearer_token"])
+        elif args.transport == "sse":
+            logger.warning(
+                "SSE transport is deprecated; migrate clients to http://%s:%s/mcp.",
+                app.settings.host,
+                app.settings.port,
+            )
+            app.run(transport="sse")
+        else:
+            app.run(transport="stdio")
+    finally:
+        database.close_all_pools()
 
 
 if __name__ == "__main__":
