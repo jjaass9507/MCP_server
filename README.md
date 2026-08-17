@@ -195,7 +195,7 @@ compressed-air queries; fall back to `db_query` for anything ad-hoc.
 | Tool | Description |
 |------|-------------|
 | `gms_list_equipment(..., limit, cursor)` | List equipment from the PostgreSQL master (all filters optional) using bounded pages |
-| `gms_list_points(..., limit, cursor)` | List monitoring points/tags for one device using bounded pages; category/type filters disambiguate duplicate device IDs |
+| `gms_list_points(..., devices, limit, cursor)` | List monitoring points/tags for one device (category/type filters disambiguate duplicate device IDs), or pass `devices=[{building, device_id, category?, equipment_type?}, ...]` to resolve tags for many devices across buildings in one call |
 | `gms_list_pipe_points(..., limit, cursor)` | List pipe-network points (HCDA/LCDA/HVAC) using bounded pages |
 | `gms_realtime_values(..., limit, cursor)` | Latest SCADA values for already-known tags using bounded pages |
 | `gms_history_values(..., to_file, limit, cursor)` | Historical samples, clamped to one day. Inline mode returns paged sample `items` plus per-tag `summaries`; file mode writes the complete series to CSV |

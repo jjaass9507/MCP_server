@@ -90,6 +90,15 @@ _DEFAULT_AGGS = ["avg"]
 # aggregate is refused unless to_file=True, to keep from flooding context.
 _MAX_INLINE_ROWS = 5000
 
+# to_file=True skips the context-flooding risk above, but an unbounded
+# estimate still means an unbounded number of serialized Oracle round trips
+# (10 tags/batch, one query per batch) with no server-side statement timeout
+# of its own — a request wide enough on devices/tags/range can otherwise run
+# for as long as the client is willing to wait. This is a much higher ceiling
+# than _MAX_INLINE_ROWS, just enough to reject requests before they touch
+# Oracle at all rather than after they've been running a while.
+_MAX_FILE_ROWS = 500_000
+
 
 # ── fixed domain logic ─────────────────────────────────────────────────────
 
@@ -237,12 +246,95 @@ def _fetch_points(
         where.append("tag_name IS NOT NULL")
     sql = f"""
         SELECT point_seq, point_name, phase, unit, tag_name,
-               scada_available, remark
+               scada_available, remark, category, equipment_type
         FROM "GMS_agent".v_point_detail
         WHERE {' AND '.join(where)}
         ORDER BY point_seq, phase
     """
     return database.run_select(dsn, cfg, sql, params)
+
+
+def _list_points_batch(
+    cfg: "_CfgModule",
+    devices: list,
+    keyword: str,
+    limit: int,
+    cursor: str,
+) -> dict[str, Any]:
+    """Resolve tags for many devices in one call (Mode B, batch).
+
+    Each device is resolved with require_scada=True — points without a usable
+    SCADA tag are useless to the downstream value tools, and including them
+    would burn through the page budget for nothing. A device that matches no
+    tagged points, or whose building+device_id spans more than one
+    category/equipment_type without one given to disambiguate (the same
+    ambiguity d8482fb fixed for single-device lookups), is skipped rather
+    than guessed at — it is reported in warnings instead of silently mixing
+    tags from different equipment together.
+    """
+    if not isinstance(devices, list) or not devices:
+        raise ToolError(
+            "devices 需為非空清單，每筆為 {building, device_id, category?, equipment_type?}。"
+        )
+
+    specs: list[dict[str, str]] = []
+    for i, d in enumerate(devices):
+        if not isinstance(d, dict) or not d.get("building") or not d.get("device_id"):
+            raise ToolError(f"devices[{i}] 需包含 building 與 device_id。")
+        specs.append(
+            {
+                "building": str(d["building"]),
+                "device_id": str(d["device_id"]),
+                "category": str(d.get("category") or ""),
+                "equipment_type": str(d.get("equipment_type") or ""),
+            }
+        )
+
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    matched_device_count = 0
+    for spec in specs:
+        building, device_id = spec["building"], spec["device_id"]
+        category, equipment_type = spec["category"], spec["equipment_type"]
+        pts = _fetch_points(
+            cfg, building, device_id, category, equipment_type, keyword,
+            require_scada=True,
+        )
+        if not pts:
+            hint = "" if category or equipment_type else "，或未提供 category/equipment_type 而無法辨識"
+            warnings.append(f"{building}/{device_id}: 查無帶 SCADA tag 的點位{hint}，已略過。")
+            continue
+        if not category and not equipment_type:
+            distinct = {(p["category"], p["equipment_type"]) for p in pts}
+            if len(distinct) > 1:
+                names = "、".join(f"{c}/{e}" for c, e in sorted(distinct))
+                warnings.append(
+                    f"{building}/{device_id}: 對應多種設備（{names}），"
+                    f"請提供 category 或 equipment_type 以精確鎖定，已略過。"
+                )
+                continue
+        matched_device_count += 1
+        for p in pts:
+            rows.append(
+                {
+                    "building": building,
+                    "device_id": device_id,
+                    "category": p["category"],
+                    "equipment_type": p["equipment_type"],
+                    "point_name": p["point_name"],
+                    "phase": p["phase"],
+                    "unit": p["unit"],
+                    "tag_name": p["tag_name"],
+                }
+            )
+
+    page = paginate(
+        rows, limit, cursor, scope=_page_scope("gms_list_points_batch", specs, keyword)
+    )
+    page["requested_count"] = len(specs)
+    page["matched_device_count"] = matched_device_count
+    page["warnings"] = warnings
+    return page
 
 
 def _fetch_points_by_tags(cfg: "_CfgModule", building: str, tag_names: list[str]) -> list[dict]:
@@ -410,26 +502,56 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         category: str = "",
         equipment_type: str = "",
         keyword: str = "",
+        devices: list[dict[str, str]] = [],
         limit: int = DEFAULT_LIMIT,
         cursor: str = "",
     ) -> dict[str, Any]:
-        """List monitoring points and SCADA tags for one piece of equipment (Mode B).
+        """List monitoring points and SCADA tags for one or many pieces of equipment (Mode B).
+
+        Two mutually exclusive modes:
+        - Single device: pass building + device_id (+ optional
+          category/equipment_type/keyword), as before.
+        - Batch: pass devices=[{building, device_id, category?, equipment_type?}, ...]
+          to resolve tags for many devices — possibly spanning multiple
+          buildings/zones — in one call instead of one gms_list_points call
+          per device. keyword, if given, is applied as a point_name filter
+          across every device in the batch. Only points with a usable SCADA
+          tag are returned; a device with no tagged points, or whose
+          building+device_id matches more than one category/equipment_type
+          without one given to disambiguate, is skipped and reported in
+          warnings rather than guessed at. Each row carries its own
+          building/device_id/category/equipment_type so tags stay traceable
+          back to the device they came from. Response also includes
+          requested_count and matched_device_count.
 
         building+device_id is not guaranteed unique (e.g. two 'A1' units, one an
         air compressor and one a dryer) — pass category and/or equipment_type
         to disambiguate.
 
         Args:
-            building:       Building code, e.g. 'K18'. Required.
-            device_id:      Equipment number, e.g. 'B4'. Required.
+            building:       Building code, e.g. 'K18'. Required in single-device mode.
+            device_id:      Equipment number, e.g. 'B4'. Required in single-device mode.
             category:       Broad equipment category, e.g. '空壓機'/'乾燥機'/'真空機'. Optional.
             equipment_type: Specific equipment type, e.g. '離心機'/'變頻螺旋機'. Optional.
             keyword:        Substring filter on point_name (LIKE). Optional.
-            limit:          Rows per page (default 100, maximum 1000).
+            devices:        Batch mode — list of {building, device_id, category?,
+                             equipment_type?} dicts. Mutually exclusive with
+                             building/device_id/category/equipment_type above.
+            limit:          Rows per page (default 100, maximum 1000). Batch
+                             callers with many devices should pass a higher
+                             limit (up to 1000) to avoid paging.
             cursor:         next_cursor from the previous call.
         """
+        if devices:
+            if building or device_id or category or equipment_type:
+                raise ToolError(
+                    "devices 與 building/device_id/category/equipment_type 為互斥參數，"
+                    "batch 模式請只用 devices（每筆自帶 category/equipment_type）。"
+                )
+            return _list_points_batch(cfg, devices, keyword, limit, cursor)
+
         if not building or not device_id:
-            raise ToolError("請提供 building 與 device_id。")
+            raise ToolError("請提供 building 與 device_id，或改用 devices 做批次查詢。")
         rows = _fetch_points(cfg, building, device_id, category, equipment_type, keyword)
         if not rows:
             msg = f"查無點位：building='{building}' device_id='{device_id}'"
@@ -769,7 +891,11 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
                         one column per agg). Required for large results — an
                         inline request estimated to exceed a few thousand
                         (tag × bucket) rows is refused with a hint to set this
-                        True or use a coarser bucket. Do NOT read that CSV back
+                        True or use a coarser bucket. to_file=True raises that
+                        ceiling but does not remove it — a request estimated
+                        to exceed 500,000 (tag × bucket) rows is refused before
+                        querying Oracle at all; narrow the device count, time
+                        range, or bucket instead. Do NOT read that CSV back
                         into context; hand its path/download_url downstream.
                         Default False.
             limit:      Inline buckets per page (default 100, maximum 1000).
@@ -786,13 +912,18 @@ def register(mcp: FastMCP, cfg: "_CfgModule") -> None:
         bucket = _validate_bucket(bucket)
         agg_list = _validate_aggs(aggs)
 
-        if not to_file:
-            estimated = _estimate_rows(len(tag_names), start_dt, end_dt, bucket)
-            if estimated > _MAX_INLINE_ROWS:
+        estimated = _estimate_rows(len(tag_names), start_dt, end_dt, bucket)
+        if to_file:
+            if estimated > _MAX_FILE_ROWS:
                 raise ToolError(
-                    f"預估回傳約 {estimated} 列（tag 數 × 桶數）超過 {_MAX_INLINE_ROWS} 上限，"
-                    f"請改用更粗的 bucket 或設 to_file=True。"
+                    f"預估回傳約 {estimated} 列（tag 數 × 桶數）超過 to_file 上限 "
+                    f"{_MAX_FILE_ROWS}，請縮小設備數量、時間範圍或改用更粗的 bucket。"
                 )
+        elif estimated > _MAX_INLINE_ROWS:
+            raise ToolError(
+                f"預估回傳約 {estimated} 列（tag 數 × 桶數）超過 {_MAX_INLINE_ROWS} 上限，"
+                f"請改用更粗的 bucket 或設 to_file=True。"
+            )
 
         points = _fetch_points_by_tags(cfg, building, tag_names)
         if not points:

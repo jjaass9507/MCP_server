@@ -1,6 +1,8 @@
 """Tests for database parsing, pooling, and write-access safeguards."""
 
+import sys
 import sqlite3
+import types
 
 import pytest
 from mcp.server.fastmcp import FastMCP
@@ -78,6 +80,107 @@ def test_parse_oracle_dsn_missing_service_raises():
 def test_parse_oracle_dsn_url_encoded_password():
     result = _parse_oracle_dsn("oracle://user:p%40ss%23word@dbhost:1521/orcl")
     assert result["password"] == "p@ss#word"
+
+
+# ── Oracle call_timeout: no statement timeout of its own otherwise ───────
+# Oracle has no server-side statement timeout. Without call_timeout set on
+# the connection, a query scanning far more rows than intended (e.g. a wide
+# gms_history_aggregate tag/date range) blocks until the DB responds or the
+# MCP client's own request timeout gives up.
+
+class _FakeOracleCursor:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeOracleConnection:
+    def __init__(self):
+        self.call_timeout = "unset"
+
+    def cursor(self):
+        return _FakeOracleCursor()
+
+
+def _install_fake_oracledb(monkeypatch):
+    connected: list[_FakeOracleConnection] = []
+
+    def fake_connect(**kwargs):
+        conn = _FakeOracleConnection()
+        connected.append(conn)
+        return conn
+
+    fake_module = types.SimpleNamespace(connect=fake_connect, Error=Exception)
+    monkeypatch.setitem(sys.modules, "oracledb", fake_module)
+    return connected
+
+
+def test_oracle_conn_applies_configured_call_timeout(monkeypatch):
+    database.close_all_pools()
+    connected = _install_fake_oracledb(monkeypatch)
+    monkeypatch.setattr(cfg, "get_oracle_call_timeout_ms", lambda: 45000)
+
+    with database._oracle_conn("oracle://u:p@host:1521/svc1", cfg):
+        pass
+
+    assert connected[0].call_timeout == 45000
+    database.close_all_pools()
+
+
+def test_oracle_conn_skips_call_timeout_when_disabled(monkeypatch):
+    database.close_all_pools()
+    connected = _install_fake_oracledb(monkeypatch)
+    monkeypatch.setattr(cfg, "get_oracle_call_timeout_ms", lambda: None)
+
+    with database._oracle_conn("oracle://u:p@host:1521/svc2", cfg):
+        pass
+
+    assert connected[0].call_timeout == "unset"
+    database.close_all_pools()
+
+
+# ── database.oracle_call_timeout_seconds config ───────────────────────────
+
+def test_get_oracle_call_timeout_ms_converts_seconds(monkeypatch):
+    monkeypatch.setattr(cfg, "_oracle_call_timeout_seconds", 30)
+    assert cfg.get_oracle_call_timeout_ms() == 30000
+
+
+def test_get_oracle_call_timeout_ms_zero_disables(monkeypatch):
+    monkeypatch.setattr(cfg, "_oracle_call_timeout_seconds", 0)
+    assert cfg.get_oracle_call_timeout_ms() is None
+
+
+def test_invalid_oracle_call_timeout_is_rejected(monkeypatch):
+    monkeypatch.setattr(cfg, "_tools_cfg", {})
+    monkeypatch.setattr(cfg, "_tool_profile", "all")
+    monkeypatch.setattr(cfg, "_enabled_categories", None)
+    monkeypatch.setattr(cfg, "_oracle_call_timeout_seconds", -5)
+    with pytest.raises(cfg.ConfigError, match="oracle_call_timeout_seconds"):
+        cfg.validate_config()
+
+
+def test_oracle_call_timeout_true_is_rejected(monkeypatch):
+    # bool is a subclass of int in Python — `oracle_call_timeout_seconds = true`
+    # in TOML must not silently pass isinstance(int) and become a 1-second timeout.
+    monkeypatch.setattr(cfg, "_tools_cfg", {})
+    monkeypatch.setattr(cfg, "_tool_profile", "all")
+    monkeypatch.setattr(cfg, "_enabled_categories", None)
+    monkeypatch.setattr(cfg, "_oracle_call_timeout_seconds", True)
+    with pytest.raises(cfg.ConfigError, match="oracle_call_timeout_seconds"):
+        cfg.validate_config()
+
+
+def test_oracle_call_timeout_false_is_accepted_as_disable(monkeypatch):
+    # The error message documents "0/false to disable" — false must actually
+    # pass validation, not just 0.
+    monkeypatch.setattr(cfg, "_tools_cfg", {})
+    monkeypatch.setattr(cfg, "_tool_profile", "all")
+    monkeypatch.setattr(cfg, "_enabled_categories", None)
+    monkeypatch.setattr(cfg, "_oracle_call_timeout_seconds", False)
+    cfg.validate_config()  # must not raise
 
 
 # ── connection safety ────────────────────────────────────────────────────
