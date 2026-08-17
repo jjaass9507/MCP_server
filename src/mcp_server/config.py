@@ -252,6 +252,9 @@ _db_connections: dict[str, str] = (
 )
 _db_pool_size: int = _config.get("database", {}).get("pool_size", 5)
 _db_access: dict[str, Any] = _config.get("database", {}).get("access", {})
+_oracle_call_timeout_seconds: Any = _config.get("database", {}).get(
+    "oracle_call_timeout_seconds", 60
+)
 
 
 def get_db_pool_size() -> int:
@@ -260,6 +263,19 @@ def get_db_pool_size() -> int:
     SQLite is exempt — it always connects directly to a local file.
     """
     return _db_pool_size
+
+
+def get_oracle_call_timeout_ms() -> int | None:
+    """Return the Oracle round-trip call timeout in milliseconds, or None to disable.
+
+    Oracle connections otherwise have no statement timeout: a query that scans
+    far more rows than intended (e.g. a wide tag/date range) blocks until the
+    server responds or the MCP client's own request timeout gives up. Setting
+    oracledb.Connection.call_timeout caps each individual round trip instead.
+    """
+    if not _oracle_call_timeout_seconds:
+        return None
+    return int(_oracle_call_timeout_seconds * 1000)
 
 
 def resolve_db(name: str) -> str:
@@ -456,6 +472,19 @@ def validate_config() -> list[str]:
     if not isinstance(_db_pool_size, int) or _db_pool_size < 1:
         errors.append(
             f"database.pool_size must be a positive integer, got {_db_pool_size!r}."
+        )
+    _oracle_timeout_valid = _oracle_call_timeout_seconds is None or (
+        _oracle_call_timeout_seconds is False
+        or (
+            isinstance(_oracle_call_timeout_seconds, (int, float))
+            and not isinstance(_oracle_call_timeout_seconds, bool)
+            and _oracle_call_timeout_seconds >= 0
+        )
+    )
+    if not _oracle_timeout_valid:
+        errors.append(
+            "database.oracle_call_timeout_seconds must be a non-negative number "
+            f"or 0/false to disable, got {_oracle_call_timeout_seconds!r}."
         )
     if not isinstance(_db_access, dict):
         errors.append("database.access must be a table keyed by database alias.")

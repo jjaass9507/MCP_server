@@ -90,6 +90,13 @@ analytics = "/home/user/data/analytics.sqlite"
 # max_connections limit. SQLite is unaffected (always a direct file connection).
 # pool_size = 5
 
+# Round-trip call timeout for Oracle connections, in seconds. Oracle has no
+# statement timeout of its own: a query that ends up scanning far more rows
+# than intended (e.g. gms_history_aggregate over a wide tag/date range) would
+# otherwise block until the server responds or the MCP client's own request
+# timeout gives up. Set to 0 to disable. Only applies to Oracle.
+# oracle_call_timeout_seconds = 60
+
 # Database access is read-only by default. Opt in separately for each alias
 # that must accept writes. db_execute is limited to one INSERT/UPDATE/DELETE.
 # Multi-statement scripts require the additional allow_scripts opt-in.

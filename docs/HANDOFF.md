@@ -161,6 +161,66 @@ SELECT TAGNAME, VALUE, DATETIME FROM (
 的 tag 清單跑 `gms_realtime_values`，確認低頻 tag 不再回 null、值與
 SCADA 畫面一致（見 §6 驗證限制）。
 
+### 多設備批次查詢：`gms_list_points(devices=...)`（2026-08-17 新增）
+
+**動機**：地端跑 Qwen3.6 35B 這類中型模型時，「查 10～50 台設備的長期
+趨勢」會逼模型逐台呼叫 `gms_list_points`（每台一次 building+device_id），
+輪次一多就容易在中途搞混設備、時間範圍或原始目標。長期資料本來就有
+`gms_history_aggregate` 可以一次查完（見上方 Mode F），但點位/tag 解析
+這一關卡在 `gms_list_points` 一次只吃一組 `building+device_id`。
+
+**設計**：在既有 `gms_list_points` 上加一個可選的 `devices` 參數，而不是
+另開一個 `gms_list_points_batch` 工具——兩個名稱高度相似的工具反而會讓
+小模型選錯（用途重疊就是選錯工具的最佳誘因），參照 §8.3 第 3 點「少一個
+工具、參數預設值保證相容」的既有先例。`devices` 與
+`building`/`device_id`/`category`/`equipment_type` 互斥，帶哪個模式由
+是否傳了 `devices` 決定。
+
+```
+gms_list_points(devices=[
+  {"building": "K18", "device_id": "A1", "category": "空壓機", "equipment_type": "離心機"},
+  {"building": "K28", "device_id": "B2"},
+], limit=1000)
+```
+
+- 每個 device 各自呼叫既有的 `_fetch_points()`（同一份 category/
+  equipment_type 過濾邏輯，**不是**新的 SQL 路徑，也絕不 JOIN
+  `v_equipment_list`——理由同 d8482fb），`require_scada=True` 固定開啟：
+  batch 模式的唯一目的是把 tag 準備好餵給 `gms_realtime_values` /
+  `gms_history_aggregate`，沒有 tag 的點位在這裡沒用，留著只會浪費分頁
+  預算。
+- **設備條件不唯一時不會靜默混在一起**：若某個 device 沒給
+  category/equipment_type，且比對到的點位橫跨多種 category/
+  equipment_type（同一 device_id 同時是空壓機又是乾燥機），該設備會被
+  跳過並寫進 `warnings`，而不是把兩種設備的 tag 混進同一批輸出——這正是
+  `d8482fb` 修過的那個 bug，如果在 batch 模式重新引入等於白修。查無點位
+  的設備同樣進 `warnings` 而非讓整批呼叫失敗。
+- 回傳的每一列都帶 `building`/`device_id`/`category`/`equipment_type`，
+  讓下游（含模型自己）永遠能把一個 tag_name 追溯回它屬於哪台設備；另外
+  回傳 `requested_count`/`matched_device_count` 讓呼叫端知道資料是否完整。
+- **邊界沒有變**：`gms_realtime_values`/`gms_history_aggregate` 仍然只吃
+  已確認的 `tag_names`，不做 keyword 模糊查詢——那是 `d98f03d` 收斂掉的
+  舊設計（模糊輸入曾經查錯設備）。`devices` 只負責批次做 Postgres 端的
+  tag 解析，keyword 是點位名稱過濾器，從未接觸 Oracle 的值查詢。
+  **未來如果要加更高階的複合工具（例如一次查完多設備的即時值或趨勢），
+  也必須維持同樣的邊界**：複合工具只能是薄的 orchestration wrapper，把
+  現有純工具串起來，不能把模糊 keyword 直接打到 Oracle 值查詢上。
+
+**連帶加固：Oracle 查詢逾時與 to_file 上限**——`devices` 讓「一次查完
+10～50 台設備」從模型湊不太出來變成一行參數就能做到，連帶把
+`gms_history_aggregate(to_file=true)` 原本完全沒有預估攔截的缺口放大：
+
+- `[database] oracle_call_timeout_seconds`（預設 60 秒）：Oracle 連線本身
+  沒有 statement timeout，設定過寬的 tag/時間範圍會一路卡到 DB 回應或
+  MCP client 自己的 request timeout 才結束。透過
+  `oracledb.Connection.call_timeout`（毫秒）幫每個連線設一個上限，設 0
+  停用。只影響 Oracle；PostgreSQL/SQL Server 連線池沒有這個設定。
+- `gms_history_aggregate` 的預估攔截（`tag 數 × 桶數`）原本只包在
+  `if not to_file:` 裡，`to_file=True` 完全沒有上限——batch 解析一上線，
+  模型很自然就會湊出「多設備 × 長時間 × to_file=true」這種請求。新增
+  `_MAX_FILE_ROWS`（500,000，比 inline 上限 `_MAX_INLINE_ROWS`=5,000 寬
+  很多但仍有界），在碰 Oracle 之前就擋掉。
+
 ---
 
 ## 4. 其他工具的設計決策與踩雷紀錄

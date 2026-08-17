@@ -3,9 +3,14 @@
 from datetime import datetime
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 
 from mcp_server.tools import gms
 from mcp_server.utils.errors import ToolError
+
+
+def _get_tool(mcp: FastMCP, name: str):
+    return mcp._tool_manager.get_tool(name).fn
 
 
 # ── _zone ────────────────────────────────────────────────────────────────
@@ -146,8 +151,11 @@ def test_fetch_points_omits_filters_when_not_given(monkeypatch):
     captured = _capture_run_select(monkeypatch)
     gms._fetch_points(_FakeCfg, "K18", "A4")
     sql = captured["sql"]
-    assert "category" not in sql
-    assert "equipment_type" not in sql
+    # category/equipment_type are always SELECTed (needed for batch ambiguity
+    # detection); only the WHERE clause must stay free of them when not given.
+    where_clause = sql[sql.index("WHERE"):]
+    assert "category" not in where_clause
+    assert "equipment_type" not in where_clause
     assert captured["params"] == {"building": "K18", "device_id": "A4"}
 
 
@@ -321,3 +329,252 @@ def test_15m_bucket_casts_datetime_to_date():
     expr = gms._BUCKET_SQL["15m"]
     assert "CAST(DATETIME AS DATE)" in expr
     assert "(DATETIME -" not in expr
+
+
+# ── _list_points_batch: multi-device gms_list_points ─────────────────────
+# devices=[{building, device_id, category?, equipment_type?}, ...] resolves
+# tags for many devices in one call. It must reuse _fetch_points' own
+# category/equipment_type filtering (never a JOIN, per d8482fb) and must not
+# silently mix tags from different equipment when a device_id is ambiguous
+# and no category/equipment_type was given to disambiguate.
+
+def _stub_fetch_points(responses: dict):
+    """Fake _fetch_points keyed by (building, device_id); records every call."""
+    calls = []
+
+    def fake(cfg_arg, building, device_id, category="", equipment_type="", keyword="", require_scada=False):
+        calls.append(
+            {
+                "building": building,
+                "device_id": device_id,
+                "category": category,
+                "equipment_type": equipment_type,
+                "keyword": keyword,
+                "require_scada": require_scada,
+            }
+        )
+        return responses.get((building, device_id), [])
+
+    return fake, calls
+
+
+def test_list_points_batch_requires_nonempty_devices():
+    with pytest.raises(ToolError):
+        gms._list_points_batch(_FakeCfg, [], "", 100, "")
+
+
+def test_list_points_batch_requires_devices_to_be_a_list():
+    with pytest.raises(ToolError):
+        gms._list_points_batch(_FakeCfg, "not-a-list", "", 100, "")
+
+
+def test_list_points_batch_requires_building_and_device_id_per_entry():
+    with pytest.raises(ToolError, match=r"devices\[0\]"):
+        gms._list_points_batch(_FakeCfg, [{"building": "K18"}], "", 100, "")
+
+
+def test_list_points_batch_resolves_multiple_devices_across_buildings(monkeypatch):
+    responses = {
+        ("K18", "A1"): [
+            {
+                "point_name": "出口壓力", "phase": "", "unit": "bar", "tag_name": "K18_GMS_A1_P",
+                "category": "空壓機", "equipment_type": "離心機",
+            },
+        ],
+        ("K28", "B2"): [
+            {
+                "point_name": "溫度", "phase": "", "unit": "C", "tag_name": "K28_GMS_B2_T",
+                "category": "乾燥機", "equipment_type": "",
+            },
+        ],
+    }
+    fake, calls = _stub_fetch_points(responses)
+    monkeypatch.setattr(gms, "_fetch_points", fake)
+
+    result = gms._list_points_batch(
+        _FakeCfg,
+        [
+            {"building": "K18", "device_id": "A1", "category": "空壓機", "equipment_type": "離心機"},
+            {"building": "K28", "device_id": "B2"},
+        ],
+        "",
+        100,
+        "",
+    )
+
+    assert result["requested_count"] == 2
+    assert result["matched_device_count"] == 2
+    assert result["warnings"] == []
+    assert result["count"] == 2
+    assert {row["tag_name"] for row in result["items"]} == {"K18_GMS_A1_P", "K28_GMS_B2_T"}
+    for row in result["items"]:
+        assert "building" in row and "device_id" in row
+    # Batch mode only wants tagged points — untagged rows would burn the page
+    # budget for nothing.
+    assert all(c["require_scada"] is True for c in calls)
+
+
+def test_list_points_batch_skips_device_with_no_points_and_warns(monkeypatch):
+    fake, _ = _stub_fetch_points({})
+    monkeypatch.setattr(gms, "_fetch_points", fake)
+
+    result = gms._list_points_batch(
+        _FakeCfg, [{"building": "K18", "device_id": "Z9"}], "", 100, ""
+    )
+
+    assert result["matched_device_count"] == 0
+    assert result["items"] == []
+    assert len(result["warnings"]) == 1
+    assert "K18/Z9" in result["warnings"][0]
+
+
+def test_list_points_batch_skips_ambiguous_device_without_category(monkeypatch):
+    # Same regression this guards against as d8482fb: K18's A4 matches both
+    # an air compressor and a dryer. Without category/equipment_type to
+    # disambiguate, the batch must not silently merge their tags — it must
+    # skip the device and say why, not guess.
+    responses = {
+        ("K18", "A4"): [
+            {
+                "point_name": "壓力", "phase": "", "unit": "bar", "tag_name": "T1",
+                "category": "空壓機", "equipment_type": "離心機",
+            },
+            {
+                "point_name": "溫度", "phase": "", "unit": "C", "tag_name": "T2",
+                "category": "乾燥機", "equipment_type": "",
+            },
+        ],
+    }
+    fake, _ = _stub_fetch_points(responses)
+    monkeypatch.setattr(gms, "_fetch_points", fake)
+
+    result = gms._list_points_batch(
+        _FakeCfg, [{"building": "K18", "device_id": "A4"}], "", 100, ""
+    )
+
+    assert result["matched_device_count"] == 0
+    assert result["items"] == []
+    assert len(result["warnings"]) == 1
+    assert "K18/A4" in result["warnings"][0]
+
+
+def test_list_points_batch_does_not_flag_ambiguity_when_category_given(monkeypatch):
+    responses = {
+        ("K18", "A4"): [
+            {
+                "point_name": "壓力", "phase": "", "unit": "bar", "tag_name": "T1",
+                "category": "空壓機", "equipment_type": "離心機",
+            },
+        ],
+    }
+    fake, calls = _stub_fetch_points(responses)
+    monkeypatch.setattr(gms, "_fetch_points", fake)
+
+    result = gms._list_points_batch(
+        _FakeCfg,
+        [{"building": "K18", "device_id": "A4", "category": "空壓機"}],
+        "",
+        100,
+        "",
+    )
+
+    assert result["matched_device_count"] == 1
+    assert result["warnings"] == []
+    assert calls[0]["category"] == "空壓機"
+
+
+# ── gms_list_points tool: single vs. batch mode dispatch ─────────────────
+
+def test_gms_list_points_rejects_mixing_devices_with_single_mode_params():
+    mcp = FastMCP(name="test")
+    gms.register(mcp, _FakeCfg)
+    tool = _get_tool(mcp, "gms_list_points")
+
+    with pytest.raises(ToolError, match="互斥"):
+        tool(building="K18", devices=[{"building": "K18", "device_id": "A1"}])
+
+
+def test_gms_list_points_batch_mode_dispatches_to_list_points_batch(monkeypatch):
+    mcp = FastMCP(name="test")
+    gms.register(mcp, _FakeCfg)
+    tool = _get_tool(mcp, "gms_list_points")
+
+    monkeypatch.setattr(
+        gms,
+        "_list_points_batch",
+        lambda cfg_arg, devices, keyword, limit, cursor: {"sentinel": True, "devices": devices},
+    )
+
+    result = tool(devices=[{"building": "K18", "device_id": "A1"}])
+    assert result == {"sentinel": True, "devices": [{"building": "K18", "device_id": "A1"}]}
+
+
+# ── gms_history_aggregate: to_file raises the row ceiling but keeps one ──
+# _MAX_INLINE_ROWS protects context from flooding; to_file=True skips that
+# risk but not the risk of an unbounded number of serialized Oracle queries
+# with no statement timeout of its own — _MAX_FILE_ROWS caps that instead.
+
+def test_gms_history_aggregate_inline_mode_rejects_before_touching_postgres(monkeypatch):
+    mcp = FastMCP(name="test")
+    gms.register(mcp, _FakeCfg)
+    tool = _get_tool(mcp, "gms_history_aggregate")
+
+    def fail_if_called(*a, **k):
+        raise AssertionError("inline mode must reject before touching Postgres/Oracle")
+
+    monkeypatch.setattr(gms, "_fetch_points_by_tags", fail_if_called)
+
+    with pytest.raises(ToolError, match=f"{gms._MAX_INLINE_ROWS} 上限"):
+        tool(
+            building="K18",
+            start_time="2026-07-01 00:00:00",
+            end_time="2026-07-31 00:00:00",
+            tag_names=[f"T{i}" for i in range(100)],
+            bucket="15m",
+            to_file=False,
+        )
+
+
+def test_gms_history_aggregate_to_file_allows_sizes_over_the_inline_cap(monkeypatch):
+    mcp = FastMCP(name="test")
+    gms.register(mcp, _FakeCfg)
+    tool = _get_tool(mcp, "gms_history_aggregate")
+
+    calls = []
+    monkeypatch.setattr(
+        gms, "_fetch_points_by_tags", lambda *a, **k: calls.append(1) or []
+    )
+
+    # Same size that inline mode rejects above — to_file must proceed past
+    # the estimate gate and reach the (stubbed) Postgres lookup.
+    with pytest.raises(ToolError, match="查無對應的點位"):
+        tool(
+            building="K18",
+            start_time="2026-07-01 00:00:00",
+            end_time="2026-07-31 00:00:00",
+            tag_names=[f"T{i}" for i in range(100)],
+            bucket="15m",
+            to_file=True,
+        )
+    assert calls == [1]
+
+
+def test_gms_history_aggregate_to_file_still_capped_at_max_file_rows(monkeypatch):
+    mcp = FastMCP(name="test")
+    gms.register(mcp, _FakeCfg)
+    tool = _get_tool(mcp, "gms_history_aggregate")
+
+    def fail_if_called(*a, **k):
+        raise AssertionError("to_file mode must still reject an unbounded estimate")
+
+    monkeypatch.setattr(gms, "_fetch_points_by_tags", fail_if_called)
+
+    with pytest.raises(ToolError, match=f"{gms._MAX_FILE_ROWS}"):
+        tool(
+            building="K18",
+            start_time="2020-01-01 00:00:00",
+            end_time="2030-01-01 00:00:00",
+            tag_names=[f"T{i}" for i in range(600)],
+            bucket="15m",
+            to_file=True,
+        )

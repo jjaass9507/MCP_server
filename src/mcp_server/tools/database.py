@@ -267,11 +267,15 @@ def _oracle_conn(dsn: str, cfg: "_CfgModule"):
             "oracledb is not installed. "
             "Run: pip install 'mcp-server[oracle]'"
         ) from e
-    pool = _get_pool(
-        dsn,
-        lambda: oracledb.connect(**_parse_oracle_dsn(dsn)),
-        cfg.get_db_pool_size(),
-    )
+
+    def _connect() -> Any:
+        conn = oracledb.connect(**_parse_oracle_dsn(dsn))
+        timeout_ms = cfg.get_oracle_call_timeout_ms()
+        if timeout_ms:
+            conn.call_timeout = timeout_ms
+        return conn
+
+    pool = _get_pool(dsn, _connect, cfg.get_db_pool_size())
     conn = None
     healthy = False
     try:
