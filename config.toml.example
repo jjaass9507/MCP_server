@@ -54,6 +54,8 @@ bearer_token_env = "MCP_HTTP_BEARER_TOKEN"
 allowed_paths = [
     "/home/user/data",
     "/tmp/workspace",
+    # Docker: mount the host deck directory at /presentations (read-only).
+    "/presentations",
 ]
 
 # Set to false for read-only mode (write_file and delete_file will be rejected).

@@ -15,6 +15,14 @@ RUN if [ -n "$MCP_EXTRAS" ]; then \
 # ── runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.11-slim
 
+# Render PPT/PPTX files to PDF and individual PNG slide images. Noto CJK keeps
+# Chinese/Japanese/Korean text faithful when matching fonts are unavailable.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libreoffice-impress \
+        poppler-utils \
+        fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
 # Non-root user for security
 RUN useradd -m -u 1000 mcp
 
@@ -24,8 +32,10 @@ WORKDIR /app
 COPY --from=build /install /usr/local
 
 # /config  → mount config.toml here at runtime
-# /data    → default data/database directory
-RUN mkdir -p /config /data && chown mcp:mcp /config /data
+# /data          → default data/database directory
+# /presentations → read-only bind mount for local decks (see docker-compose.yml)
+RUN mkdir -p /config /data /presentations \
+    && chown mcp:mcp /config /data /presentations
 
 USER mcp
 

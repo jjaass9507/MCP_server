@@ -14,6 +14,9 @@ services:
       - ./config.toml:/config/config.toml:ro
       # Persistent data directory for SQLite databases and files.
       - mcp-data:/data
+      # Local PowerPoint files exposed read-only inside the container.
+      # Override PRESENTATIONS_DIR in .env when decks live elsewhere.
+      - ${PRESENTATIONS_DIR:-./presentations}:/presentations:ro
     environment:
       MCP_LOG_LEVEL: INFO
       # Required because the container binds beyond localhost. Set this in a

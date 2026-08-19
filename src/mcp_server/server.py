@@ -5,7 +5,15 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 import mcp_server.config as cfg
-from mcp_server.tools import api, custom, database, filesystem, gms, presentation
+from mcp_server.tools import (
+    api,
+    custom,
+    database,
+    filesystem,
+    gms,
+    presentation,
+    presentation_reader,
+)
 from mcp_server.utils.download_server import start_download_server
 from mcp_server.utils.http_auth import BearerTokenMiddleware
 from mcp_server.utils.logging import setup_logging
@@ -38,6 +46,10 @@ def _server_instructions(categories: frozenset[str]) -> str:
     if "presentation" in categories:
         parts.append(
             "Call list_presentation_styles() before create_presentation(). "
+            "Use read_presentation, not read_file, for existing PPT/PPTX files. "
+            "When read_presentation returns a non-null next_slide, continue calling it "
+            "with that start_slide until next_slide is null. A vision-capable model is "
+            "required to interpret the returned slide images. "
         )
     if "gms" in categories:
         fallback = (
@@ -87,6 +99,7 @@ def create_server() -> FastMCP:
         api.register(mcp, cfg)
     if "presentation" in categories:
         presentation.register(mcp, cfg)
+        presentation_reader.register(mcp, cfg)
     if "gms" in categories:
         gms.register(mcp, cfg)
     return mcp

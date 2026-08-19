@@ -7,6 +7,7 @@ A modular Python MCP (Model Context Protocol) server that exposes several catego
 - **Filesystem** — read, write, list, search, and inspect files
 - **Database** — query and modify SQLite databases (by name alias, not raw path)
 - **API** — call external HTTP/REST APIs (by service name alias, not raw URL/key)
+- **Presentation** — create decks and read local PPT/PPTX files as text plus slide images
 - **Custom** — utility tools and a template for adding your own business logic
 
 Access to files and databases is controlled by `config.toml` — the model can only touch what you explicitly allow.
@@ -224,6 +225,25 @@ Generic services default to GET-only. Configure `allowed_methods` and narrow
 `allowed_path_prefixes` per service before enabling writes; `timeout_seconds`
 (maximum 120) and `max_request_body_bytes` (maximum 1 MB) bound each request.
 
+### Presentation
+
+`read_presentation` converts a local PowerPoint file to PDF, extracts visible
+text, renders complete slides as PNG images, and returns both through MCP. The
+client and selected model must support MCP image content / vision input.
+
+| Tool | Description |
+|------|-------------|
+| `read_presentation(path, start_slide, limit, detail)` | Read up to 6 PPT/PPTX slides as text plus images; follow `next_slide` until null |
+| `list_presentation_styles()` | List creation presets, layouts, fonts, and design constraints |
+| `plan_presentation_outline(...)` | Build a content scaffold before generating a deck |
+| `create_presentation(...)` | Generate an editable PPTX from structured slide data |
+
+LibreOffice Impress and Poppler (`pdftoppm`) are required for reading existing
+decks; the Docker image installs both. For Docker, put files in `./presentations`
+or set `PRESENTATIONS_DIR` in `.env`, and include `/presentations` in
+`[filesystem].allowed_paths`. Static rendering preserves photos, charts,
+SmartArt, tables, and layout, but not animation, video playback, or audio.
+
 ### Custom / Utility
 
 | Tool | Description |
@@ -435,6 +455,7 @@ MCP_server/
 │       │   ├── gms.py          # compressed-air point/tag/value queries
 │       │   ├── api.py
 │       │   ├── presentation.py # pptx generation via pptxgenjs
+│       │   ├── presentation_reader.py # ppt/pptx text + rendered slide images
 │       │   └── custom.py
 │       └── utils/
 │           ├── errors.py
