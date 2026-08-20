@@ -1,20 +1,22 @@
-# Windows + IIS + Corporate CA HTTPS Deployment Plan
+# Windows + IIS + 公司內部 CA HTTPS 部署交接計畫
 
-> **Purpose**: Convert the current Windows-hosted MCP Server from a PowerShell-attached HTTP process into a production-style internal service that starts automatically, is exposed through corporate HTTPS, preserves Bearer authentication, and supports cross-machine export downloads over HTTPS.
+> **目的**：將目前部署於 Windows、必須依賴 PowerShell 視窗持續開啟的 HTTP MCP Server，轉換成可正式長期運行的內部服務：Windows 開機自動啟動、透過公司內部 CA 憑證提供 HTTPS、保留 Bearer Token 驗證，並支援跨機器的 HTTPS 匯出檔案下載。
 >
-> **Audience**: Human maintainers and AI coding/deployment agents. This document is intentionally written as an executable handoff plan. A new agent should be able to continue from the first unchecked item without needing the original conversation.
+> **適用對象**：維護人員、開發 Agent、部署 Agent、後續接手此專案的其他 AI Agent。
 >
-> **Repository**: `jjaass9507/MCP_server`
+> **Repository**：`jjaass9507/MCP_server`
 >
-> **Primary runtime**: Offline / air-gapped Windows server
+> **主要正式環境**：離線或受限網路的 Windows Server / Windows 主機
 >
-> **Target transport**: MCP Streamable HTTP
+> **MCP Transport**：Streamable HTTP
+>
+> **交接原則**：新的 Agent 不需要知道原始對話內容，應可直接從本文件「目前狀態」中第一個尚未完成的項目開始執行。
 
 ---
 
-## 0. Executive target
+## 0. 最終目標架構
 
-The final deployment should look like this:
+正式部署完成後，架構應如下：
 
 ```text
 AI Agent / MCP Client
@@ -24,73 +26,73 @@ AI Agent / MCP Client
         v
 +--------------------------------------+
 | IIS                                  |
-| Corporate CA certificate             |
-| TLS termination / reverse proxy      |
+| 公司內部 CA 憑證                     |
+| TLS Termination / Reverse Proxy      |
 |                                      |
 | /mcp     -> 127.0.0.1:8080/mcp      |
 | /exports -> 127.0.0.1:8081/exports  |
 +-------------------+------------------+
                     |
-                    | local HTTP only
+                    | 僅本機 HTTP
                     v
 +--------------------------------------+
 | MCP Server Windows Service           |
 | Python .venv                         |
 | Streamable HTTP                      |
 | 127.0.0.1:8080                       |
-| BearerTokenMiddleware remains active |
+| BearerTokenMiddleware 持續啟用       |
 +--------------------------------------+
 
-Optional export server:
+可選的 Export Server：
 127.0.0.1:8081 -> IIS /exports -> HTTPS 443
 ```
 
-### Target external URLs
+### 對外 URL 目標
 
 ```text
 https://<MCP_FQDN>/mcp
 https://<MCP_FQDN>/exports/<id>
 ```
 
-Example only:
+示例：
 
 ```text
 https://mcp.internal.example.com/mcp
 ```
 
-Do **not** standardize on an IP URL when using a corporate certificate unless the certificate SAN explicitly contains that IP. Prefer the DNS/FQDN issued in the certificate.
+若使用公司憑證，不應以 IP 作為正式 MCP URL，除非憑證的 SAN 明確包含該 IP。正式環境應優先使用公司簽發憑證所對應的 DNS / FQDN。
 
 ---
 
-## 1. Current repository baseline
+## 1. 目前 Repository 基準狀態
 
-Before changing anything, verify the repository still matches these assumptions.
+任何 Agent 開始修改前，都要先確認程式碼仍符合以下假設；若實際程式碼已不同，以最新程式碼為準，並更新本文件。
 
-### MCP HTTP runtime
+### 1.1 MCP HTTP Runtime
 
-Current implementation is in:
+主要程式：
 
 ```text
 src/mcp_server/server.py
 ```
 
-Expected behavior:
+預期目前行為：
 
-- `FastMCP` is configured with `streamable_http_path="/mcp"`.
-- Streamable HTTP is served with `uvicorn.run(...)`.
-- Bearer authentication is wrapped around the ASGI app by `BearerTokenMiddleware`.
-- Server-side TLS is not currently configured in Uvicorn.
-- Database pools are closed from the `finally` block during normal server shutdown.
+- `FastMCP` 使用 `streamable_http_path="/mcp"`。
+- Streamable HTTP 透過 `uvicorn.run(...)` 啟動。
+- ASGI App 外層使用 `BearerTokenMiddleware` 做 Bearer Token 驗證。
+- Uvicorn 本身目前沒有正式掛載 TLS 憑證。
+- Server 正常停止時，`finally` 會呼叫資料庫 pool cleanup。
 
-### HTTP configuration
+### 1.2 HTTP 設定
 
-Current example config is:
+設定範例：
 
 ```text
 config.toml.example
 ```
 
-Expected `[http]` fields include:
+預期 `[http]` 主要欄位：
 
 ```toml
 host = "127.0.0.1"
@@ -100,56 +102,77 @@ allowed_origins = [...]
 bearer_token_env = "MCP_HTTP_BEARER_TOKEN"
 ```
 
-### Current Windows deployment gap
+### 1.3 Windows 常駐服務缺口
 
-The repository currently contains Linux service deployment files:
+目前 Repository 已有 Linux systemd：
 
 ```text
 deploy/install-systemd.sh
 deploy/mcp-server.service
 ```
 
-There is no equivalent Windows Service deployment package yet.
+但尚未有完整 Windows Service 部署方案。
 
-### Current export/download behavior
+因此現在 Windows 上若使用類似：
 
-Implementation:
+```powershell
+python -m mcp_server.server --transport streamable-http
+```
+
+則 PowerShell 視窗關閉後 Python Process 也會停止，這不是正式服務部署方式。
+
+### 1.4 Export / Download 現況
+
+程式：
 
 ```text
 src/mcp_server/utils/download_server.py
 ```
 
-The current generated cross-machine URL is HTTP and includes `advertise_host` + `download_port` directly.
+目前跨機器 download URL 是由：
 
-This means that putting only `/mcp` behind HTTPS is insufficient if `serve_downloads = true`; `/exports` also needs an externally advertised HTTPS URL.
+```text
+advertise_host + download_port
+```
+
+產生 HTTP URL。
+
+因此若：
+
+```toml
+serve_downloads = true
+```
+
+只把 `/mcp` 改成 HTTPS 還不完整，`/exports` 也必須一併納入正式 HTTPS 架構。
 
 ---
 
-## 2. Non-negotiable design decisions
+## 2. 不可隨意變更的架構決策
 
-Agents must preserve these decisions unless the maintainer explicitly changes them.
+除非維護者明確要求改架構，後續 Agent 必須維持以下決策。
 
-### 2.1 IIS terminates TLS
+### 2.1 TLS 由 IIS 終止
 
-Do **not** make Python/Uvicorn the primary corporate certificate owner.
+正式環境不採用「Python/Uvicorn 直接持有公司憑證」作為主要方案。
 
-Reason:
+原因：
 
-- Corporate certificates are normally managed in Windows Certificate Store.
-- Private keys may be marked non-exportable.
-- IIS can bind directly to certificates in the Windows certificate store.
-- Certificate renewal can then happen independently from MCP application code.
+- 公司憑證通常由 Windows Certificate Store 管理。
+- Private Key 可能被設定為不可匯出。
+- IIS 可直接使用 Windows Certificate Store 的憑證。
+- 公司後續換證或自動更新憑證時，不需要修改 Python MCP 程式碼。
+- TLS、安全協定與憑證生命週期交給 IIS 比較符合 Windows 企業環境管理方式。
 
-Therefore:
+因此架構固定為：
 
 ```text
-External: HTTPS -> IIS
-Internal: IIS -> HTTP 127.0.0.1
+外部：HTTPS -> IIS
+內部：IIS -> HTTP 127.0.0.1
 ```
 
-### 2.2 MCP must bind to localhost after IIS is enabled
+### 2.2 IIS 上線後 MCP Backend 必須只 Bind localhost
 
-Production target:
+正式設定目標：
 
 ```toml
 [http]
@@ -157,13 +180,24 @@ host = "127.0.0.1"
 port = 8080
 ```
 
-Do not expose MCP's backend port directly to the LAN after IIS reverse proxy is active.
+IIS Reverse Proxy 正常後，不應再讓 MCP Backend Port `8080` 直接暴露給公司 LAN。
 
-### 2.3 Bearer authentication remains enabled
+### 2.3 Bearer Token 驗證必須保留
 
-HTTPS does not replace MCP authorization.
+HTTPS 只解決：
 
-Required path:
+```text
+傳輸加密
+Server 身分驗證
+```
+
+Bearer Token 解決：
+
+```text
+MCP Client 存取授權
+```
+
+所以正式流向必須仍為：
 
 ```text
 Client
@@ -174,65 +208,79 @@ Client
   -> MCP
 ```
 
-Do not remove `BearerTokenMiddleware` simply because IIS is using HTTPS.
+不可因為已經使用 HTTPS，就移除 `BearerTokenMiddleware`。
 
-### 2.4 Corporate certificate trust must exist on clients
+### 2.4 Client 必須信任公司 CA
 
-The MCP server possessing a valid certificate is only one side of TLS.
+Server 掛好公司憑證不代表 Client 一定會信任。
 
-Every consuming machine must trust the issuing corporate CA chain:
+Client 端必須能建立完整信任鏈：
 
 ```text
-Corporate Root CA
-  -> Intermediate CA (if used)
-  -> MCP server certificate
+公司 Root CA
+  -> Intermediate CA（若有）
+  -> MCP Server Certificate
 ```
 
-Do not disable TLS verification in the Agent as the production solution.
+正式解法不可使用：
 
-### 2.5 Offline deployment remains supported
+```text
+verify=False
+忽略 SSL error
+關閉 certificate verification
+```
 
-The production machine is treated as offline / restricted-network Windows.
+### 2.5 必須保留離線部署能力
 
-Any new runtime dependency such as WinSW must be included in the offline packaging/deployment process rather than downloaded dynamically on the production server.
+正式 MCP Windows 主機視為：
 
----
+```text
+Air-gapped / Restricted Network
+```
 
-## 3. Definition of Done
+因此後續新增 WinSW 或其他 Runtime Dependency 時，必須整合到 offline package。
 
-Deployment is complete only when all of the following are true.
-
-- [ ] MCP is automatically started after Windows boot.
-- [ ] Closing PowerShell does not stop MCP.
-- [ ] MCP backend listens only on `127.0.0.1:8080`.
-- [ ] IIS listens on HTTPS 443 using the corporate-issued certificate.
-- [ ] `https://<MCP_FQDN>/mcp` reaches MCP through IIS.
-- [ ] Bearer authentication still rejects requests without the correct token.
-- [ ] Correct Bearer token succeeds through IIS.
-- [ ] Client TLS verification succeeds without disabling certificate verification.
-- [ ] Rebooting the machine restores the service automatically.
-- [ ] Python process failure triggers automatic service recovery/restart.
-- [ ] Logs are persisted outside an interactive PowerShell session.
-- [ ] Existing database connection-pool cleanup behavior is preserved.
-- [ ] If exports are enabled, returned `download_url` is HTTPS and externally reachable.
-- [ ] Backend ports 8080/8081 are not exposed to general LAN clients.
-- [ ] Deployment procedure is documented and repeatable on a fresh Windows host.
+正式 Server 不可在安裝服務時即時上網下載 WinSW。
 
 ---
 
-# Phase A — Collect infrastructure values
+## 3. 完成定義（Definition of Done）
 
-**Owner**: Infrastructure / Windows administrator
+以下全部達成後，才能視為這次正式部署完成：
 
-**Code change required**: No
+- [ ] Windows 開機後 MCP 自動啟動。
+- [ ] 不登入 Windows 也能啟動 MCP。
+- [ ] 關閉所有 PowerShell 視窗後 MCP 仍正常運行。
+- [ ] MCP Backend 只監聽 `127.0.0.1:8080`。
+- [ ] IIS 使用公司簽發憑證監聽 HTTPS 443。
+- [ ] `https://<MCP_FQDN>/mcp` 可經 IIS 正常連到 MCP。
+- [ ] 沒有 Bearer Token 時仍回 401。
+- [ ] Bearer Token 錯誤時仍回 401。
+- [ ] 正確 Bearer Token 可成功建立 MCP Session。
+- [ ] Client 不需停用 SSL 驗證即可連線。
+- [ ] Windows Reboot 後 MCP Service 自動恢復。
+- [ ] Python Process Crash 後 Service 可自動 Restart。
+- [ ] MCP Log 寫入持久化檔案，而不是只存在 PowerShell console。
+- [ ] 原本 Database Connection Pool 的正常釋放機制沒有被破壞。
+- [ ] 若啟用 Export，`download_url` 改為 HTTPS 且跨機器可存取。
+- [ ] LAN Client 不需要直接連 `8080` / `8081`。
+- [ ] 新 Windows 主機可依文件重複部署。
 
-**Blocking**: Yes
+---
 
-Before coding deployment behavior, collect the actual production values.
+# Phase A — 蒐集正式環境基礎資訊
 
-## A1. Required values
+**負責角色**：Infra / Windows Administrator / 部署 Agent
 
-Fill these in before Phase D.
+**需要改程式**：否
+
+**是否 Blocking**：是
+
+在開始正式 IIS 配置以前，先取得以下實際資訊。
+
+## A1. 必填環境值
+
+請填寫：
 
 ```text
 MCP_FQDN=
@@ -252,65 +300,92 @@ CONFIG_TOML_PATH=
 LOG_DIRECTORY=
 ```
 
-Recommended project root example:
+例如專案路徑可能是：
 
 ```text
 D:\FAC_Job\MCP_server
 ```
 
-## A2. DNS verification
+以上僅為範例，不可寫死成正式值。
 
-The DNS record must resolve from MCP client machines.
+## A2. DNS 驗證
+
+從 MCP Client 所在機器執行：
 
 ```powershell
 Resolve-DnsName <MCP_FQDN>
 ```
 
-Expected result: the intended MCP Windows server IP.
+預期：
 
-## A3. Certificate verification
+```text
+<MCP_FQDN> -> MCP Server IP
+```
 
-On the MCP Windows server:
+若沒有 DNS Record，應先由公司 DNS 管理單位完成新增。
 
-1. Open `certlm.msc`.
-2. Check `Local Computer -> Personal -> Certificates`.
-3. Locate the corporate certificate.
-4. Confirm:
-   - certificate is not expired;
-   - certificate has an associated private key;
-   - Server Authentication EKU is present;
-   - Subject Alternative Name contains `<MCP_FQDN>`;
-   - certificate chain is valid.
+## A3. 公司憑證確認
 
-PowerShell inspection example:
+在 MCP Windows Server：
+
+1. 開啟 `certlm.msc`。
+2. 進入：
+
+```text
+Local Computer
+  -> Personal
+  -> Certificates
+```
+
+3. 找到 MCP 要使用的公司憑證。
+4. 確認：
+   - 尚未過期。
+   - 有 Private Key。
+   - EKU 包含 Server Authentication。
+   - SAN 包含 `<MCP_FQDN>`。
+   - Certificate Chain 正常。
+
+PowerShell 可先檢查：
 
 ```powershell
 Get-ChildItem Cert:\LocalMachine\My |
     Select-Object Subject, Thumbprint, NotAfter, HasPrivateKey
 ```
 
-### A acceptance criteria
+### Phase A 驗收
 
-- [ ] FQDN exists.
-- [ ] Certificate SAN matches FQDN.
-- [ ] Server has access to certificate private key.
-- [ ] Client machines trust the corporate CA chain.
+- [ ] FQDN 已存在。
+- [ ] DNS 正確指向 MCP Server。
+- [ ] 公司憑證 SAN 與 FQDN 相符。
+- [ ] MCP Server 可存取憑證 Private Key。
+- [ ] MCP Client 所在機器信任公司 CA Chain。
 
 ---
 
-# Phase B — Add Windows Service deployment support
+# Phase B — 建立 Windows Service 常駐能力
 
-**Owner**: Coding agent
+**負責角色**：Coding Agent
 
-**Code change required**: Yes
+**需要改程式 / Repository**：是
 
-**Recommended implementation**: WinSW wrapper
+**建議方案**：WinSW
 
-The Python process itself is not a native Windows Service. Do not treat a scheduled interactive PowerShell window as the final production solution.
+Python Process 本身不是 Windows Service。
 
-## B1. Add deployment files
+不要把以下方式當作正式部署：
 
-Create:
+```text
+登入 Windows
+-> 開 PowerShell
+-> 執行 Python
+-> PowerShell 永遠不關
+```
+
+正式目標是 Windows Service。
+
+## B1. 新增 Windows Deployment 目錄
+
+建議新增：
 
 ```text
 deploy/windows/
@@ -323,19 +398,17 @@ deploy/windows/
   README.md
 ```
 
-WinSW executable should be packaged using a stable name, for example:
+WinSW Binary 建議固定名稱：
 
 ```text
 deploy/windows/MCPServer.exe
 ```
 
-Do not make the production machine download WinSW from the internet.
+離線正式機器不可執行安裝時才上網下載 WinSW。
 
-## B2. Service command
+## B2. Service 啟動命令
 
-The service must run the project venv Python directly.
-
-Logical command:
+Windows Service 應直接使用 Project venv：
 
 ```text
 <PROJECT_ROOT>\.venv\Scripts\python.exe
@@ -343,65 +416,104 @@ Logical command:
     --transport streamable-http
 ```
 
-The service working directory must be the repository root because existing project behavior depends on the current working directory unless `MCP_CONFIG` is explicitly set.
+Service Working Directory 必須明確設定為 Repository Root。
 
-Preferred approach: set both the working directory and `MCP_CONFIG` explicitly.
-
-Example service environment:
+原因：目前部分功能仍會依賴 Project Root，例如：
 
 ```text
-MCP_CONFIG=D:\FAC_Job\MCP_server\config.toml
-MCP_HTTP_BEARER_TOKEN=<provided securely>
+config.toml
+scripts/generate_pptx.js
+其他相對路徑資源
+```
+
+建議同時明確指定：
+
+```text
+WorkingDirectory=<PROJECT_ROOT>
+MCP_CONFIG=<PROJECT_ROOT>\config.toml
+```
+
+## B3. Service Environment
+
+Service 至少要取得：
+
+```text
+MCP_CONFIG=D:\...\MCP_server\config.toml
+MCP_HTTP_BEARER_TOKEN=<secret>
 MCP_LOG_LEVEL=INFO
-MCP_LOG_FILE=D:\FAC_Job\MCP_server\logs\mcp-server.log
+MCP_LOG_FILE=D:\...\MCP_server\logs\mcp-server.log
 ```
 
-## B3. Service identity
-
-Do not assume the interactive user's environment variables will exist in a Windows Service.
-
-Choose one of these explicitly:
-
-1. Dedicated domain/service account — preferred when database/network access requires domain identity.
-2. Local service account — acceptable only if all required resources are reachable under that identity.
-
-Verify that the selected account can:
-
-- read project files;
-- read `config.toml`;
-- execute `.venv\Scripts\python.exe`;
-- write the log directory;
-- write export directory if enabled;
-- reach configured PostgreSQL / MSSQL / Oracle endpoints;
-- read any filesystem paths exposed by MCP.
-
-## B4. Recovery behavior
-
-Configure automatic restart on process failure.
-
-Required intent:
+注意：
 
 ```text
-First failure  -> restart service
-Second failure -> restart service
-Subsequent     -> restart service
+目前登入使用者的 User Environment Variables
 ```
 
-Avoid an infinite rapid crash loop. Use an appropriate restart delay such as 5–10 seconds.
+不代表 Windows Service Account 一定能讀到。
 
-## B5. Startup type
+不可假設現在 PowerShell 執行成功，轉成 Service 就一定成功。
 
-Target:
+## B4. Service Account
+
+必須明確決定服務身份。
+
+推薦順序：
+
+1. 專用 Domain / Service Account。
+2. 若不需要 Domain Network Identity，再評估 Local Service 類型帳號。
+
+Service Account 必須有權限：
+
+- 讀取 Project Directory。
+- 讀取 `config.toml`。
+- 執行 `.venv\Scripts\python.exe`。
+- 寫入 Log Directory。
+- 若啟用 Export，可寫入 Export Directory。
+- 連線 PostgreSQL。
+- 連線 MSSQL（若啟用）。
+- 連線 Oracle（若啟用）。
+- 存取 MCP `[filesystem].allowed_paths` 所需路徑。
+
+不要直接使用高權限 Domain Admin 作為解決權限問題的方法。
+
+## B5. Failure Recovery
+
+Windows Service 必須設定 Crash Recovery。
+
+目標：
+
+```text
+First failure      -> Restart Service
+Second failure     -> Restart Service
+Subsequent failure -> Restart Service
+```
+
+建議 Restart Delay：
+
+```text
+5 ~ 10 秒
+```
+
+避免 Crash Loop 每毫秒重新啟動。
+
+## B6. Startup Type
+
+目標：
 
 ```text
 Startup Type = Automatic
 ```
 
-Automatic (Delayed Start) is acceptable if Oracle/network dependencies are not ready immediately during machine boot.
+若公司環境在 Windows 開機時網路或 Oracle 等資源較晚 Ready，可考慮：
 
-## B6. Windows Service smoke test
+```text
+Automatic (Delayed Start)
+```
 
-After installing:
+## B7. Service Smoke Test
+
+安裝後：
 
 ```powershell
 Get-Service MCPServer
@@ -409,91 +521,115 @@ Start-Service MCPServer
 Get-Service MCPServer
 ```
 
-Verify backend listener:
+確認 Backend：
 
 ```powershell
 Get-NetTCPConnection -LocalPort 8080 -State Listen
 ```
 
-Expected:
+預期：
 
 ```text
 LocalAddress = 127.0.0.1
 ```
 
-Then close all interactive PowerShell windows and verify the listener/service remains alive.
+接著：
 
-### B acceptance criteria
+1. 關閉所有手動開啟的 MCP PowerShell。
+2. 登出目前 Windows User。
+3. 再確認服務仍 Running。
 
-- [ ] `MCPServer` exists as a Windows Service.
-- [ ] Service starts without interactive login.
-- [ ] PowerShell window closure has no impact.
-- [ ] Backend binds to localhost only.
-- [ ] Log file is written successfully.
-- [ ] Service restarts after forced Python process termination.
+### Phase B 驗收
+
+- [ ] Windows 中存在 `MCPServer` Service。
+- [ ] 不需要互動式登入即可啟動。
+- [ ] PowerShell 關閉後服務不停止。
+- [ ] Backend 只 Bind localhost。
+- [ ] Log 可正常寫入。
+- [ ] 強制結束 MCP Python Process 後會自動恢復。
 
 ---
 
-# Phase C — Integrate Windows deployment into offline packaging
+# Phase C — 整合 Offline Package
 
-**Owner**: Coding agent
+**負責角色**：Coding Agent
 
-**Code change required**: Yes
+**需要改 Repository**：是
 
-Inspect and update:
+需要檢查：
 
 ```text
 scripts/pack_offline.ps1
 scripts/install_offline.ps1
 ```
 
-## C1. Pack WinSW with offline bundle
+## C1. 將 WinSW 納入離線包
 
-The online packaging machine may download/package the approved WinSW binary, but the offline target machine must not require internet access.
+Online Build / Packaging Machine 可以取得公司核准版本的 WinSW。
 
-The final offline ZIP must contain all Windows service deployment assets.
+但是最後產出的 Offline ZIP 必須包含完整 Service Deployment Asset。
 
-## C2. Do not silently install the service during generic dependency installation
-
-Keep these concerns separate:
+正式 Windows Server 不應在：
 
 ```text
-install_offline.ps1     -> Python/runtime installation
-install-service.ps1     -> Windows Service registration
+install-service.ps1
 ```
 
-This makes rollback and troubleshooting safer.
+執行時再連 GitHub 或外網下載 WinSW。
 
-## C3. Installation order on a fresh target
+## C2. 不要把 Runtime 安裝與 Service Registration 混在一起
 
-Required documented order:
+保留明確職責：
 
 ```text
-1. Extract offline bundle
-2. Run install_offline.ps1
-3. Create/edit config.toml
-4. Configure service secrets/account
-5. Run deploy/windows/install-service.ps1
-6. Verify localhost HTTP backend
-7. Configure IIS HTTPS
-8. Run external HTTPS smoke tests
+install_offline.ps1
+    -> 建立 Python Runtime / venv / dependencies
+
+install-service.ps1
+    -> 註冊 Windows Service
 ```
 
-### C acceptance criteria
+這樣比較容易：
 
-- [ ] Fresh offline deployment does not need internet access.
-- [ ] WinSW/service files are present in packaged artifact.
-- [ ] Existing Python offline installation still works.
+- Debug。
+- Rollback。
+- 更新 Python Dependency。
+- 單獨重新註冊 Service。
+
+## C3. 新 Windows 主機正式安裝順序
+
+文件必須清楚記錄：
+
+```text
+1. 解壓 Offline Bundle
+2. 執行 install_offline.ps1
+3. 建立 / 修改 config.toml
+4. 建立 Service Secret / Bearer Token
+5. 設定 Service Account
+6. 執行 deploy/windows/install-service.ps1
+7. 驗證 localhost MCP HTTP
+8. 設定 IIS HTTPS
+9. 驗證跨機器 HTTPS MCP
+```
+
+### Phase C 驗收
+
+- [ ] Fresh Offline Machine 不需 Internet 即可完成 Runtime 安裝。
+- [ ] WinSW 已包含於 Offline Package。
+- [ ] Windows Service Scripts 已包含於 Offline Package。
+- [ ] 原本 Python Offline Install 流程沒有被破壞。
 
 ---
 
-# Phase D — Configure production MCP HTTP settings
+# Phase D — 正式 MCP HTTP 設定
 
-**Owner**: Coding/deployment agent
+**負責角色**：Coding / Deployment Agent
 
-**Code change required**: Usually no; config change required
+**需要改程式**：通常否
 
-Production `config.toml` should use localhost backend binding.
+**需要改 config**：是
+
+正式 `config.toml`：
 
 ```toml
 [http]
@@ -504,11 +640,11 @@ bearer_token_env = "MCP_HTTP_BEARER_TOKEN"
 
 ## D1. allowed_hosts
 
-IIS reverse-proxy Host behavior must be tested.
+必須先確認 IIS Reverse Proxy 最後傳進 MCP 的 Host Header。
 
-Preferred design: IIS preserves the external host header.
+理想模式是保留外部 Host。
 
-Then add the real external hostname:
+設定例如：
 
 ```toml
 allowed_hosts = [
@@ -518,67 +654,97 @@ allowed_hosts = [
 ]
 ```
 
-Do not use an unrestricted wildcard merely to make a 421 error disappear.
+若遇到：
+
+```text
+421 Misdirected Request
+```
+
+應先確認：
+
+- IIS Preserve Host Header 行為。
+- MCP 實際收到的 Host。
+- `allowed_hosts` 是否包含正確 FQDN。
+
+不要為了讓 421 消失直接設定無限制 wildcard 或關閉 DNS Rebinding Protection。
 
 ## D2. allowed_origins
 
-Non-browser MCP clients may not send `Origin`.
+一般非瀏覽器 MCP Client 可能不會帶 `Origin`。
 
-If a browser-based client is used, explicitly add its trusted origin. Do not add `*` by default.
+如果後續有 Browser-based Client，才把實際可信 Origin 加入：
 
-## D3. Bearer token storage
+```toml
+allowed_origins = [
+    "https://<trusted-ui-host>"
+]
+```
 
-The secret token must not be committed to GitHub or written into `config.toml`.
+不要預設使用：
 
-`config.toml` should only contain:
+```text
+*
+```
+
+## D3. Bearer Token 儲存
+
+Production Token 不可放進：
+
+```text
+GitHub
+config.toml
+README
+install script
+log
+```
+
+`config.toml` 只保留 Environment Variable Name：
 
 ```toml
 bearer_token_env = "MCP_HTTP_BEARER_TOKEN"
 ```
 
-The actual value must be available to the Windows Service account/process.
+真正 Token 由 Service Runtime 取得。
 
-For the first deployment, prefer a machine-level or service-specific secret setup rather than relying on the current interactive user's environment.
-
-Generate a strong token using the project Python runtime:
+Token 可透過 Project Python 產生：
 
 ```powershell
 & ".\.venv\Scripts\python.exe" -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-Do not print the production token into logs or commit it to scripts.
+正式部署後要另外記錄 Token Rotation 方法。
 
-### D acceptance criteria
+### Phase D 驗收
 
-- [ ] MCP binds to `127.0.0.1:8080`.
-- [ ] Remote machines cannot access port 8080 directly.
-- [ ] Bearer token exists in the service runtime environment.
-- [ ] `allowed_hosts` contains the actual FQDN used through IIS.
+- [ ] MCP 只監聽 `127.0.0.1:8080`。
+- [ ] 遠端 Client 無法直接使用 Port 8080。
+- [ ] Service Process 能取得 `MCP_HTTP_BEARER_TOKEN`。
+- [ ] `allowed_hosts` 包含正式 FQDN。
 
 ---
 
-# Phase E — Install and configure IIS reverse proxy
+# Phase E — 安裝及設定 IIS Reverse Proxy + 公司 HTTPS
 
-**Owner**: Windows/IIS administrator
+**負責角色**：Windows / IIS Administrator / Deployment Agent
 
-**Code change required**: No
+**需要改 Python**：否
 
-## E1. Required IIS capabilities
+## E1. IIS 必要元件
 
-Required components typically include:
+通常需要：
 
 - IIS Web Server
-- URL Rewrite module
-- Application Request Routing (ARR)
-- ARR Proxy enabled
+- URL Rewrite Module
+- Application Request Routing（ARR）
+- ARR Proxy Enabled
 
-Because the server may be offline, obtain approved offline installers/packages through the organization's software distribution process before starting.
+正式機器若無法上網，需要事先透過公司核准方式取得 Offline Installer。
 
-Do not assume these components are already installed.
+不要預設 Windows Server 一定已經有 URL Rewrite 與 ARR。
 
-## E2. Enable ARR proxy
+## E2. 啟用 ARR Proxy
 
-In IIS Manager:
+IIS Manager：
 
 ```text
 Server
@@ -587,50 +753,61 @@ Server
   -> Enable proxy
 ```
 
-The exact UI may differ by ARR version.
+不同 ARR 版本 UI 名稱可能略有差異。
 
-## E3. Create MCP IIS site
+## E3. 建立 MCP IIS Site
 
-Recommended design:
-
-```text
-Site name: MCPServer
-Binding: https / 443 / <MCP_FQDN>
-Certificate: corporate certificate for <MCP_FQDN>
-```
-
-Avoid binding production traffic to an arbitrary high HTTPS port unless company network policy requires it.
-
-## E4. HTTPS binding
-
-Bind the certificate from:
+建議：
 
 ```text
-Local Computer / Personal certificate store
+Site Name: MCPServer
+Binding Type: https
+Port: 443
+Host Name: <MCP_FQDN>
+Certificate: 公司簽發給 <MCP_FQDN> 的憑證
 ```
 
-Verify the certificate selected in IIS matches the intended FQDN and has a private key.
+除非公司 Network Policy 有要求，不建議正式 Endpoint 使用任意高 Port HTTPS。
 
-## E5. Reverse proxy `/mcp`
+## E4. HTTPS Binding
 
-Target:
+憑證應由：
+
+```text
+Local Computer / Personal
+```
+
+Certificate Store 直接提供 IIS 使用。
+
+確認：
+
+- FQDN Match。
+- Certificate 未過期。
+- 有 Private Key。
+- Chain Trusted。
+
+Private Key 不需要因 MCP 而匯出成 `.key`。
+
+## E5. `/mcp` Reverse Proxy
+
+正式 Routing：
 
 ```text
 https://<MCP_FQDN>/mcp
     -> http://127.0.0.1:8080/mcp
 ```
 
-Ensure the rule preserves:
+Reverse Proxy 必須保留：
 
-- HTTP method (`GET`, `POST`, etc.);
-- query string;
-- `Authorization` header;
-- appropriate streaming behavior;
-- external Host header if the selected transport security configuration expects it.
+- HTTP Method。
+- Query String。
+- `Authorization` Header。
+- Streamable HTTP 所需 Streaming 行為。
+- 正確 Host Header 行為。
 
-Do not enable IIS authentication modes that consume or replace the application's Bearer `Authorization` header unless the architecture is intentionally redesigned.
+不要設定會把 MCP Bearer Header 吃掉或改寫掉的 IIS Authentication Flow。
 
-Recommended IIS site authentication for the MCP reverse proxy layer:
+推薦 IIS MCP Proxy Layer：
 
 ```text
 Anonymous Authentication: Enabled
@@ -638,71 +815,101 @@ Windows Authentication: Disabled
 Basic Authentication: Disabled
 ```
 
-Application-level Bearer authentication remains enforced by MCP.
+實際 MCP Authentication 仍由：
 
-## E6. Proxy timeout
+```text
+BearerTokenMiddleware
+```
 
-MCP tool calls can outlive short web defaults, especially database/history queries.
+負責。
 
-Set an IIS/ARR proxy timeout that is comfortably above the intended MCP request window. Do not use a tiny timeout that causes IIS to terminate legitimate long-running tool calls before MCP or database-specific timeouts can respond.
+## E6. Proxy Timeout
 
-Do not remove Oracle's application-level `call_timeout`; reverse-proxy timeout and database call timeout solve different problems.
+部分 MCP Tool Call 可能需要較長時間，例如：
+
+- Database Query。
+- GMS History。
+- Oracle Aggregation。
+- 大型資料處理。
+
+因此 IIS / ARR Proxy Timeout 必須高於合理 MCP Request Window。
+
+不要因 IIS Timeout 過短，導致 Backend 還在執行但 Proxy 先切斷。
+
+同時不可移除 Oracle `call_timeout`。
+
+兩者解決不同問題：
+
+```text
+IIS Timeout
+    -> Reverse Proxy 層
+
+Oracle call_timeout
+    -> Database Round-trip 層
+```
 
 ## E7. Firewall
 
-External inbound target:
+對外主要開放：
 
 ```text
 TCP 443 -> IIS
 ```
 
-Backend ports should remain local:
+Backend：
 
 ```text
-8080 -> localhost only
-8081 -> localhost only, if exports are enabled
+127.0.0.1:8080
+127.0.0.1:8081  # 若啟用 Export
 ```
 
-Do not open 8080/8081 broadly merely because IIS cannot reach them; IIS on the same machine should reach localhost directly.
+不應要求 LAN Client 直接存取 Backend Port。
 
-### E acceptance criteria
+### Phase E 驗收
 
-- [ ] IIS HTTPS binding is valid.
-- [ ] Corporate certificate is presented to clients.
-- [ ] `/mcp` proxies to localhost MCP.
-- [ ] Authorization header reaches MCP unchanged.
-- [ ] HTTP 401 is returned for missing/wrong Bearer token.
-- [ ] Correct token reaches MCP successfully.
+- [ ] IIS HTTPS Binding 正常。
+- [ ] Client 收到正確公司憑證。
+- [ ] `/mcp` 正確 Proxy 至 localhost MCP。
+- [ ] `Authorization` Header 能完整送到 MCP。
+- [ ] 無 Token 回 401。
+- [ ] 錯誤 Token 回 401。
+- [ ] 正確 Token 能建立 MCP Session。
 
 ---
 
-# Phase F — Move export downloads behind the same HTTPS endpoint
+# Phase F — 將 Export Download 一併 HTTPS 化
 
-**Owner**: Coding agent + IIS administrator
+**負責角色**：Coding Agent + IIS Administrator
 
-**Code change required**: Yes if `serve_downloads = true`
+**需要改程式**：若 `serve_downloads=true`，是
 
-Skip this phase only when export download serving is intentionally disabled.
+若正式環境確定：
 
-## F1. Existing problem
+```toml
+serve_downloads = false
+```
 
-Current `download_server.py` builds URLs similar to:
+本 Phase 可標示 Not Applicable。
+
+## F1. 現有問題
+
+目前 `download_server.py` 會產生類似：
 
 ```text
 http://<advertise_host>:8081/exports/<id>
 ```
 
-Once IIS is the public endpoint, the desired URL is:
+但是正式架構應回傳：
 
 ```text
 https://<MCP_FQDN>/exports/<id>
 ```
 
-The backend download server may still remain plain HTTP on localhost.
+Backend Download Server 仍可維持 localhost HTTP。
 
-## F2. Add explicit external/public download base URL
+## F2. 新增 Public Base URL 設定
 
-Preferred configuration addition:
+推薦新增：
 
 ```toml
 [export]
@@ -712,117 +919,146 @@ download_host = "127.0.0.1"
 download_port = 8081
 ```
 
-Modify configuration parsing and URL generation so `register_file()` returns:
+`register_file()` 應改成依 `public_base_url` 回傳：
 
 ```text
 {public_base_url}/{file_id}
 ```
 
-Do not infer the external scheme/host from the backend bind address.
+不可再從 Backend Bind Address 推算 Public URL。
 
-## F3. Backward compatibility
+原因：
 
-If existing users depend on `advertise_host` + `download_port`, preserve the old configuration path temporarily unless there is a deliberate breaking-change decision.
+```text
+Backend address != Client reachable address
+```
 
-Recommended behavior:
+在 Reverse Proxy 架構下必須明確區分。
 
-1. If `public_base_url` exists, use it.
-2. Otherwise use the current `http://advertise_host:download_port/exports` behavior.
+## F3. Backward Compatibility
 
-Validate `public_base_url` at startup:
+若目前已有環境使用：
 
-- `https://` required for production examples;
-- no trailing slash normalization bugs;
-- no embedded credentials;
-- valid URL structure.
+```text
+advertise_host
+download_port
+```
 
-## F4. IIS `/exports` proxy rule
+則不要不經評估直接 Breaking Change。
 
-Target:
+推薦：
+
+```text
+1. 若 public_base_url 有設定 -> 使用 public_base_url
+2. 否則 -> 保留舊 advertise_host + download_port 邏輯
+```
+
+並在 Startup Validation 檢查：
+
+- URL 結構合法。
+- 不應產生重複 Slash。
+- 不應包含 Credentials。
+- 正式範例必須使用 HTTPS。
+
+## F4. IIS `/exports` Proxy
+
+Routing：
 
 ```text
 https://<MCP_FQDN>/exports/*
     -> http://127.0.0.1:8081/exports/*
 ```
 
-The existing unguessable, time-limited export ID remains the capability controlling access to that file.
+原有：
 
-If stricter export authentication is required later, design it separately; do not accidentally break current cross-machine handoff semantics while performing the HTTPS migration.
+```text
+unguessable file id
+TTL
+expiry
+```
 
-## F5. Tests
+語意應保持不變。
 
-Add tests for:
+若未來要求 Export 也使用 Bearer Authentication，應另立需求設計，不要在 HTTPS Migration 過程中意外破壞既有 Cross-machine Handoff。
 
-- `public_base_url` configuration parsing;
-- returned URL uses HTTPS base URL;
-- path joining does not produce `//exports` or missing slash;
-- fallback behavior remains correct if backward compatibility is retained.
+## F5. Unit Test
 
-### F acceptance criteria
+至少新增：
 
-- [ ] Export server binds to localhost only.
-- [ ] Generated `download_url` uses `https://<MCP_FQDN>/exports/...`.
-- [ ] Remote consumer can download through IIS.
-- [ ] Direct LAN access to port 8081 is unnecessary.
+- `public_base_url` Parsing。
+- HTTPS URL Generation。
+- Slash Normalization。
+- Fallback Behavior。
+- Invalid Public URL Validation。
+
+### Phase F 驗收
+
+- [ ] Export Server 只 Bind localhost。
+- [ ] MCP 回傳 URL 為 `https://<MCP_FQDN>/exports/...`。
+- [ ] 遠端 Server 可經 IIS 下載檔案。
+- [ ] Client 不需直接連 Port 8081。
 
 ---
 
-# Phase G — Logging, recovery, and operational verification
+# Phase G — Logging、Recovery 與正式運維驗證
 
-**Owner**: Coding/deployment agent
+**負責角色**：Coding / Deployment Agent
 
-## G1. Persistent logs
+## G1. Persistent Logging
 
-Configure:
+設定：
 
 ```text
 MCP_LOG_LEVEL=INFO
 MCP_LOG_FILE=<LOG_DIRECTORY>\mcp-server.log
 ```
 
-Verify:
+確認：
 
-- service account can write the directory;
-- logs survive PowerShell logout;
-- Bearer token is never logged;
-- API keys / DB passwords are never logged.
+- Service Account 可寫入。
+- Logout 後 Log 仍持續寫入。
+- Token 不會出現在 Log。
+- DB Password 不會出現在 Log。
+- API Key 不會出現在 Log。
 
-## G2. Service restart test
+## G2. Process Crash Recovery Test
 
-Identify the Python process associated with the service and terminate it intentionally in a controlled maintenance window.
+在維護時段主動結束 Service 內的 Python Process。
 
-Expected:
+預期：
 
 ```text
-WinSW detects process exit
--> service recovery/restart
--> 127.0.0.1:8080 is listening again
+Python Process Exit
+-> WinSW / Windows Service 偵測失敗
+-> Restart
+-> 127.0.0.1:8080 再次 Listen
 ```
 
-## G3. Machine reboot test
+## G3. Windows Reboot Test
 
-Restart Windows.
+重開 Windows Server。
 
-After reboot, without interactive login:
+在沒有手動登入執行 MCP 的情況下：
 
 ```powershell
 Get-Service MCPServer
 Get-NetTCPConnection -LocalPort 8080 -State Listen
 ```
 
-Expected service status:
+預期：
 
 ```text
-Running
+Status = Running
+LocalAddress = 127.0.0.1
 ```
 
-Then test HTTPS externally.
+再從其他 Client 測 HTTPS。
 
-## G4. Database connectivity regression
+## G4. Database Regression
 
-Run representative tools for every enabled production database type.
+使用正式 Service Account 執行代表性 Tool。
 
-At minimum, where applicable:
+依啟用功能至少測：
 
 ```text
 db_list_databases
@@ -832,31 +1068,52 @@ gms_realtime_values
 gms_history_aggregate
 ```
 
-Verify service identity changes did not remove network/database permissions.
+確認從 Interactive User 切到 Service Account 後，沒有造成：
 
-## G5. Connection-pool shutdown regression
+- Network Permission 問題。
+- Oracle Auth 問題。
+- PostgreSQL Auth 問題。
+- File Share Permission 問題。
 
-The repository currently closes database pools when server execution exits through the normal `finally` path.
+## G5. Connection Pool Shutdown Regression
 
-Do not remove that behavior while adding Windows Service support.
+目前 Server 正常結束時已有 DB Pool Cleanup。
 
-Verify stop/restart operations do not leave stale database connections indefinitely.
+新增 Windows Service 後不可破壞此行為。
 
-### G acceptance criteria
+需測試：
 
-- [ ] Persistent logs are generated.
-- [ ] Server automatically recovers from process failure.
-- [ ] Server automatically returns after Windows reboot.
-- [ ] Database/GMS tools work under the service account.
-- [ ] No obvious connection leak appears during repeated service restart tests.
+```text
+Start Service
+-> 執行 DB Tool
+-> Stop Service
+-> 檢查 DB Connection
+```
+
+以及：
+
+```text
+Restart Service 多次
+```
+
+確認沒有明顯 Connection 不斷累積。
+
+### Phase G 驗收
+
+- [ ] Persistent Log 正常。
+- [ ] Crash 後 Service 自動恢復。
+- [ ] Reboot 後 Service 自動恢復。
+- [ ] Database Tools 可用。
+- [ ] GMS Tools 可用。
+- [ ] Service Restart 沒有明顯 Connection Leak。
 
 ---
 
-# Phase H — End-to-end security and client tests
+# Phase H — 跨機器 End-to-End Security Test
 
-**Owner**: Deployment agent / MCP client owner
+**負責角色**：Deployment Agent / MCP Client Owner
 
-Test from a different machine, not only from localhost.
+一定要從另一台機器測試，不能只測 localhost。
 
 ## H1. DNS
 
@@ -864,88 +1121,115 @@ Test from a different machine, not only from localhost.
 Resolve-DnsName <MCP_FQDN>
 ```
 
-Must resolve to the MCP server.
+必須解析到正確 MCP Server。
 
-## H2. TLS certificate
+## H2. TLS
 
-From the client, access:
+Client 連：
 
 ```text
 https://<MCP_FQDN>/mcp
 ```
 
-The TLS stack must trust the certificate without `verify=False`, insecure flags, or self-signed bypasses.
+TLS 必須在沒有以下設定時成功：
 
-If validation fails, inspect:
+```text
+verify=False
+ignore certificate
+skip SSL verification
+```
 
-- corporate Root CA installed on client;
-- Intermediate CA installed/served correctly;
-- SAN matches hostname;
-- certificate validity date;
-- system clock.
+如果失敗，依序檢查：
 
-## H3. Authentication negative test
+1. Root CA。
+2. Intermediate CA。
+3. SAN。
+4. Certificate Expiry。
+5. Client / Server System Clock。
 
-Without token:
+## H3. Bearer Negative Test
+
+沒有 Token：
 
 ```text
 Expected: HTTP 401 Unauthorized
 ```
 
-With incorrect token:
+錯誤 Token：
 
 ```text
 Expected: HTTP 401 Unauthorized
 ```
 
-## H4. Authentication positive test
+## H4. Bearer Positive Test
 
-With the same Bearer token configured for the MCP Service:
+使用與 MCP Service 相同 Token：
 
 ```text
-Expected: MCP initialize/session request succeeds
+Expected: MCP initialize / session request 成功
 ```
 
-Do not consider a simple browser GET to `/mcp` a complete MCP test; use an MCP-capable client or a protocol-valid request.
+不要只使用瀏覽器 GET `/mcp` 判斷 MCP 可用。
 
-## H5. Host-header test
+必須使用：
 
-If a `421 Misdirected Request` appears:
+```text
+MCP Client
+或 Protocol-valid MCP Request
+```
 
-1. inspect the Host received by MCP;
-2. inspect IIS preserve-host behavior;
-3. verify `allowed_hosts` contains the actual host + port form;
-4. fix the exact allowlist.
+## H5. Host Header / 421 Test
 
-Do not disable DNS rebinding protection as the default fix.
+若看到：
 
-## H6. Export test
+```text
+421 Misdirected Request
+```
 
-If exports enabled:
+依序：
 
-1. run a tool that returns a `download_url`;
-2. confirm URL begins with `https://<MCP_FQDN>/exports/`;
-3. download it from the consuming machine;
-4. verify expiration behavior still works;
-5. verify direct `http://server:8081/...` is not required.
+1. 確認 MCP 收到的 Host。
+2. 確認 IIS 是否 Preserve Host。
+3. 檢查 `[http].allowed_hosts`。
+4. 加入精確 FQDN / Port Pattern。
 
-### H acceptance criteria
+不要直接關掉 DNS Rebinding Protection。
 
-- [ ] TLS verification succeeds from another machine.
-- [ ] Missing/wrong token fails.
-- [ ] Correct token works.
-- [ ] MCP tools execute end-to-end.
-- [ ] Export URL works over HTTPS if enabled.
+## H6. Export Test
+
+若啟用 Export：
+
+1. 執行會回傳 `download_url` 的 Tool。
+2. URL 必須為：
+
+```text
+https://<MCP_FQDN>/exports/...
+```
+
+3. 從 Consumer Machine 下載。
+4. 確認 TTL 到期後失效。
+5. 確認不需直接連：
+
+```text
+http://server:8081
+```
+
+### Phase H 驗收
+
+- [ ] Remote Client TLS 驗證成功。
+- [ ] Missing Token Fail。
+- [ ] Wrong Token Fail。
+- [ ] Correct Token Success。
+- [ ] MCP Tool End-to-End 成功。
+- [ ] Export HTTPS 成功（若啟用）。
 
 ---
 
-# Phase I — Documentation and operator runbook
+# Phase I — 文件與正式操作手冊
 
-**Owner**: Documentation/deployment agent
+**負責角色**：Documentation / Deployment Agent
 
-Update repository documentation after implementation.
-
-Required documents/sections:
+實作完成後必須同步更新：
 
 ```text
 README.md
@@ -954,29 +1238,38 @@ deploy/windows/README.md
 docs/HANDOFF.md
 ```
 
-## I1. README deployment section
+以及本文件狀態。
 
-Document the supported production topology:
+## I1. README
+
+README 必須明確寫出正式架構：
 
 ```text
-Corporate HTTPS -> IIS -> localhost MCP Windows Service
+Corporate HTTPS
+-> IIS
+-> localhost MCP Windows Service
 ```
 
-Make clear that direct `python -m ...` remains useful for development/debugging but is not the intended production lifecycle.
+並區分：
+
+```text
+手動 python 啟動 = Development / Debug
+Windows Service = Production
+```
 
 ## I2. config.toml.example
 
-If Phase F is implemented, document:
+若 Phase F 完成，加入：
 
 ```toml
 public_base_url = "https://mcp.internal.example.com/exports"
 ```
 
-Keep secrets out of the example.
+只能放範例，不可放正式 Secret。
 
-## I3. Windows Service runbook
+## I3. Windows Service Runbook
 
-Must include exact commands for:
+至少記錄：
 
 ```powershell
 Get-Service MCPServer
@@ -985,357 +1278,440 @@ Stop-Service MCPServer
 Restart-Service MCPServer
 ```
 
-Also document:
+以及：
 
-- log location;
-- config location;
-- service account;
-- how to update code;
-- when `install_offline.ps1` must be rerun;
-- how to rotate Bearer token;
-- how to replace/renew IIS certificate;
-- how to uninstall the service.
+- Service Name。
+- Service Account。
+- Project Root。
+- Config Path。
+- Log Path。
+- 更新程式方式。
+- 哪些情況需要重新執行 `install_offline.ps1`。
+- Bearer Token Rotation。
+- IIS Certificate Renewal / Replacement。
+- Service Uninstall。
 
-## I4. Upgrade procedure
+## I4. 正式升級流程
 
-Target operational upgrade sequence:
+標準流程：
 
 ```text
-1. Stop MCPServer service
-2. Backup config.toml and deployment-specific secrets/settings
-3. Update repository / extract new offline bundle
-4. If dependencies changed, rerun install_offline.ps1
-5. Start MCPServer service
-6. Check logs
-7. Run localhost smoke test
-8. Run HTTPS smoke test
+1. Stop MCPServer
+2. 備份 config.toml 與正式環境設定
+3. 更新 Repository / 解壓新版 Offline Bundle
+4. 若 Dependency 有變更，重新執行 install_offline.ps1
+5. Start MCPServer
+6. 檢查 Log
+7. localhost Smoke Test
+8. HTTPS Smoke Test
+9. MCP Tool Regression Test
 ```
 
-For a code-only update with unchanged dependencies, preserve the existing design goal that a full environment rebuild should not be required.
+若只是 Python Source Code 變更且 Dependency 沒變，不應強迫整個 venv 重建。
 
-### I acceptance criteria
+### Phase I 驗收
 
-- [ ] A different maintainer can deploy without original author present.
-- [ ] Production start/stop/restart procedure is documented.
-- [ ] Certificate renewal procedure is documented.
-- [ ] Bearer token rotation procedure is documented.
+- [ ] 新維護者不需要原作者即可部署。
+- [ ] Start/Stop/Restart 流程清楚。
+- [ ] Certificate Renewal 有文件。
+- [ ] Bearer Token Rotation 有文件。
+- [ ] Offline Upgrade 有文件。
 
 ---
 
-# 4. Recommended implementation order
+# 4. 建議執行順序
 
-Agents should execute in this order unless a concrete dependency requires otherwise.
+後續 Agent 預設依照以下順序：
 
 ```text
-1. Phase A — collect FQDN / certificate / service account values
-2. Phase B — Windows Service support
-3. Phase C — offline packaging integration
-4. Phase D — localhost production configuration
-5. Verify MCP works as a service over local HTTP
-6. Phase E — IIS + corporate HTTPS
-7. Verify /mcp over HTTPS + Bearer token
-8. Phase F — HTTPS exports, if enabled
-9. Phase G — recovery/reboot/database regressions
-10. Phase H — external client security tests
-11. Phase I — final docs/runbook updates
+1. Phase A — 收集 FQDN / Certificate / Service Account
+2. Phase B — Windows Service
+3. Phase C — Offline Package
+4. Phase D — localhost Production Config
+5. 驗證 MCP 作為 Windows Service 可正常跑 localhost HTTP
+6. Phase E — IIS + Corporate HTTPS
+7. 驗證 HTTPS /mcp + Bearer Token
+8. Phase F — HTTPS Export（若啟用）
+9. Phase G — Recovery / Reboot / DB Regression
+10. Phase H — Remote Client End-to-End Test
+11. Phase I — Final Runbook / Documentation
 ```
 
-Important sequencing rule:
+重要原則：
 
-> Do not debug IIS, TLS, Windows Service lifecycle, application authentication, and database permissions all at the same time. First prove the application works as a localhost Windows Service; then introduce IIS/TLS; then test remote clients.
+> 不要同時 Debug Windows Service、IIS、TLS、Bearer Token、Database Permission 五個層級。
+>
+> 第一階段先證明 MCP 能作為 Windows Service 在 localhost 穩定運行；第二階段才加入 IIS / TLS；第三階段才測跨機器 Agent。
 
 ---
 
-# 5. Agent task boundaries
+# 5. 不同 Agent 的工作邊界
 
-This section exists to prevent scope drift across multiple AI agents.
+這一節用來避免多人或多 Agent 接手時需求發散。
 
-## Agent 1 — Windows Service implementation
+## Agent 1 — Windows Service 實作
 
-Allowed scope:
+主要 Scope：
 
 ```text
 deploy/windows/**
 scripts/pack_offline.ps1
 scripts/install_offline.ps1
-README deployment references if required
+README 中必要的部署引用
 ```
 
-Must not redesign MCP tools or database behavior.
+不可順便重新設計：
 
-Deliverables:
+- GMS Tool。
+- Database Tool。
+- MCP Schema。
+- Query 行為。
 
-- WinSW service definition;
-- install/uninstall/start/stop/restart scripts;
-- offline package integration;
-- service lifecycle tests.
+交付物：
 
-## Agent 2 — IIS / corporate certificate deployment guide
+- WinSW Service Definition。
+- Install / Uninstall / Start / Stop / Restart Scripts。
+- Offline Packaging Integration。
+- Service Lifecycle Test。
 
-Allowed scope:
+## Agent 2 — IIS / 公司憑證部署
+
+主要 Scope：
 
 ```text
 deploy/windows/README.md
-docs/** deployment sections
-config.toml.example comments
+docs/** 部署相關內容
+config.toml.example 註解
 ```
 
-Primary work may be infrastructure configuration rather than Python code.
+主要工作可能是 Windows / IIS Configuration，而不是 Python。
 
-Deliverables:
+交付物：
 
-- exact IIS reverse-proxy configuration;
-- HTTPS binding instructions;
-- Host/Authorization behavior verification;
-- firewall rules;
-- acceptance-test record.
+- IIS Reverse Proxy 設定。
+- HTTPS Binding。
+- 公司憑證驗證。
+- Host / Authorization Header 驗證。
+- Firewall 設定。
+- 實際 Acceptance Test 結果。
 
-## Agent 3 — HTTPS export URL implementation
+## Agent 3 — HTTPS Export URL
 
-Allowed scope:
+主要 Scope：
 
 ```text
 src/mcp_server/config.py
 src/mcp_server/utils/download_server.py
 config.toml.example
-tests/** related export/config tests
+tests/** export/config 相關測試
 ```
 
-Must preserve export token/expiry semantics.
+不可破壞：
 
-Deliverables:
+- Export ID Randomness。
+- TTL。
+- Expiration。
+- Cross-machine handoff 語意。
 
-- `public_base_url` or equivalent explicit public URL configuration;
-- backward compatibility decision documented;
-- tests;
-- HTTPS-generated download URL.
+交付物：
 
-## Agent 4 — End-to-end validation and documentation
+- `public_base_url` 或等價機制。
+- Backward Compatibility Decision。
+- Unit Test。
+- HTTPS `download_url`。
 
-Allowed scope:
+## Agent 4 — E2E Validation / Final Documentation
+
+主要 Scope：
 
 ```text
 tests/**
 README.md
 docs/HANDOFF.md
 deploy/windows/README.md
+本文件
 ```
 
-Deliverables:
+交付物：
 
-- test matrix results;
-- reboot/recovery verification;
-- remote client verification;
-- final operator runbook.
+- Test Matrix。
+- Reboot Verification。
+- Crash Recovery Verification。
+- Remote MCP Client Verification。
+- Final Operator Runbook。
 
 ---
 
-# 6. Agent handoff protocol
+# 6. Agent 交接規範
 
-Every agent working on this plan must update the status block below before handing off.
+每個 Agent 完成工作後，必須更新本文件，避免下一個 Agent 重新調查一次。
 
-## Current status
+## 6.1 Phase 狀態
 
-Use exactly one status per phase:
+每個 Phase 僅使用以下狀態：
 
 ```text
-NOT_STARTED
-IN_PROGRESS
-BLOCKED
-CODE_COMPLETE
-VERIFIED
+NOT_STARTED   = 尚未開始
+IN_PROGRESS   = 執行中
+BLOCKED       = 有阻塞
+CODE_COMPLETE = 程式已完成但尚未正式環境驗證
+VERIFIED      = 已完成且驗證通過
+NOT_APPLICABLE = 此環境不需要
 ```
 
-Current initial state:
+## 6.2 目前狀態
 
-| Phase | Status | Owner/Agent | Evidence / Notes |
+| Phase | 狀態 | Owner / Agent | Evidence / Notes |
 |---|---|---|---|
-| A Infrastructure values | NOT_STARTED | — | Need real FQDN/certificate/service-account values |
-| B Windows Service | NOT_STARTED | — | Repo currently has Linux systemd deployment only |
-| C Offline packaging | NOT_STARTED | — | Must package Windows service wrapper offline |
-| D Production HTTP config | NOT_STARTED | — | Final values depend on FQDN/IIS behavior |
-| E IIS + corporate HTTPS | NOT_STARTED | — | Corporate certificate available per maintainer; details not yet recorded |
-| F HTTPS exports | NOT_STARTED | — | Required only if `serve_downloads=true` |
-| G Operations/recovery | NOT_STARTED | — | Requires service implementation |
-| H End-to-end client tests | NOT_STARTED | — | Requires IIS + client trust |
-| I Final runbook/docs | NOT_STARTED | — | Complete after implementation is verified |
+| A 基礎環境資訊 | NOT_STARTED | — | 需要正式 FQDN、憑證、Service Account、路徑 |
+| B Windows Service | NOT_STARTED | — | Repo 目前只有 Linux systemd |
+| C Offline Packaging | NOT_STARTED | — | WinSW 尚未整合 Offline Bundle |
+| D Production HTTP Config | NOT_STARTED | — | 需依正式 FQDN / IIS Host 行為完成 |
+| E IIS + 公司 HTTPS | NOT_STARTED | — | 已知使用公司憑證，但實際 Thumbprint / FQDN 尚未記錄 |
+| F HTTPS Export | NOT_STARTED | — | `serve_downloads=true` 時需要 |
+| G Operations / Recovery | NOT_STARTED | — | 需先完成 Windows Service |
+| H End-to-End Test | NOT_STARTED | — | 需 IIS 與 Client CA Trust |
+| I Final Runbook | NOT_STARTED | — | 正式驗證後完成 |
 
-## Handoff entry template
+## 6.3 每次 Handoff 必填格式
 
-Append a dated entry at the bottom of this file for every agent handoff:
+每個 Agent 在本文件底部新增：
 
 ```markdown
-## Handoff YYYY-MM-DD — <agent/name>
+## Handoff YYYY-MM-DD — <Agent 名稱>
 
-### Completed
+### 已完成
 - ...
 
-### Changed files
+### 修改檔案
 - `path/to/file`
 
-### Validation performed
+### 已執行驗證
 - command / result
 
-### Remaining work
+### 尚未完成
 - ...
 
-### Blockers
-- None / exact blocker
+### Blocker
+- 無 / 明確阻塞原因
 
-### Important decisions
+### 重要決策
 - ...
 
-### Next recommended action
+### 下一步
 - ...
 ```
 
-Do not write vague entries such as "service updated". Include concrete file names, commands, results, and blockers.
+不要只寫：
+
+```text
+服務已更新
+HTTPS 已完成
+```
+
+必須包含：
+
+- 檔名。
+- Command。
+- Result。
+- Blocker。
+- 下一步。
 
 ---
 
-# 7. Security constraints
+# 7. Security Guardrails
 
-The following are explicit guardrails.
+以下為硬性限制：
 
-- Never commit corporate certificate private keys.
-- Never commit `.pfx` files containing private keys.
-- Never commit the production Bearer token.
-- Never write the Bearer token into normal application logs.
-- Never disable TLS certificate verification as the production solution.
-- Never replace the application Bearer token with "HTTPS only".
-- Never expose backend `8080` broadly after IIS is active.
-- Never expose export `8081` broadly after IIS is active.
-- Never solve `421 Misdirected Request` by globally disabling DNS rebinding protection without explicit approval.
-- Never run the service under an over-privileged admin/domain account just to avoid permission troubleshooting.
-- Keep database credentials server-side and preserve existing alias-based configuration behavior.
-- Preserve Oracle read-only protections and database connection-pool controls.
+- 不可 Commit 公司憑證 Private Key。
+- 不可 Commit 含 Private Key 的 `.pfx`。
+- 不可 Commit Production Bearer Token。
+- 不可把 Bearer Token 寫進一般 Application Log。
+- 不可把 DB Password / API Key 寫入 Log。
+- 不可以關閉 TLS Verification 當作正式解法。
+- 不可因已啟用 HTTPS 就移除 Bearer Authentication。
+- IIS 上線後不可讓 Backend `8080` 對整個 LAN 開放。
+- IIS 上線後不可讓 Export `8081` 對整個 LAN 開放。
+- 不可為了解決 421 就直接關閉 DNS Rebinding Protection。
+- 不可以過度權限的 Admin Account 當 Service Account 來迴避權限問題。
+- 必須保留 Database Alias / Server-side Secret 架構。
+- 必須保留 Oracle Read-only 保護。
+- 必須保留 Database Connection Pool 限制與 Cleanup。
 
 ---
 
-# 8. Rollback plan
+# 8. Rollback Plan
 
-If IIS or Windows Service deployment fails, rollback should be controlled and reversible.
+部署失敗時必須能回復，不應邊修邊破壞目前可用環境。
 
-## Windows Service rollback
+## 8.1 Windows Service Rollback
 
 ```text
 1. Stop MCPServer
-2. Uninstall MCPServer service
-3. Do not delete config.toml or logs automatically
-4. Run MCP manually from PowerShell for diagnostic fallback
+2. Uninstall MCPServer Service
+3. 不自動刪除 config.toml
+4. 不自動刪除 logs
+5. 回到 PowerShell 手動啟動做 Debug
 ```
 
-Manual fallback:
+Debug Fallback：
 
 ```powershell
 Set-Location <PROJECT_ROOT>
 & ".\.venv\Scripts\python.exe" -m mcp_server.server --transport streamable-http
 ```
 
-Manual fallback is for troubleshooting only; it is not the completed production state.
+此方式只作 Troubleshooting，不代表 Production 已完成。
 
-## IIS rollback
+## 8.2 IIS Rollback
 
 ```text
-1. Disable/remove MCP reverse proxy rule
-2. Preserve certificate in Windows certificate store
-3. Keep backend bound to localhost if possible
-4. Diagnose locally before re-exposing traffic
+1. Disable / Remove MCP Rewrite Rule
+2. 保留 Certificate 在 Windows Certificate Store
+3. Backend 優先仍維持 localhost
+4. 從 localhost 先確認 MCP 正常
+5. 再重新導入 IIS
 ```
 
-Do not reopen backend port 8080 to the full network as the default rollback.
+不要把：
+
+```text
+重新對全 LAN 開放 8080
+```
+
+當作預設 Rollback。
 
 ---
 
-# 9. Troubleshooting matrix
+# 9. Troubleshooting Matrix
 
-| Symptom | Likely area | First checks |
+| 症狀 | 可能區域 | 第一優先檢查 |
 |---|---|---|
-| PowerShell close stops service | Windows Service not implemented | `Get-Service MCPServer` |
-| Service immediately stops | working directory/env/config | WinSW log, `MCP_CONFIG`, Python path |
-| MCP works manually but not as service | service account permissions/env | DB/network/file permissions, Bearer env |
-| HTTPS certificate warning | CA/SAN/chain | client Root CA, SAN, expiry |
-| HTTP 401 through IIS | Bearer token/header | Authorization header forwarding, service env |
-| HTTP 421 | allowed_hosts / Host | IIS preserve host + `[http].allowed_hosts` |
-| HTTP 502 from IIS | backend unavailable | service status, localhost:8080 listener |
-| Request dies during long query | IIS/ARR timeout | proxy timeout plus application/DB timeout |
-| Export URL still says `http://...:8081` | export URL generator | Phase F `public_base_url` |
-| Export URL gives 404 | IIS route / expired id | `/exports` rewrite + TTL |
-| DB works interactively but fails as service | service identity | service account network/DB rights |
-| PostgreSQL/Oracle sessions remain after stop | lifecycle cleanup | service shutdown path, pool close logs |
+| PowerShell 關閉後 MCP 停止 | Windows Service 尚未完成 | `Get-Service MCPServer` |
+| Service 一啟動就停止 | Working Directory / Env / Config | WinSW Log、`MCP_CONFIG`、Python Path |
+| 手動執行正常，Service 不正常 | Service Account 權限 / Env | DB、Network、Filesystem、Bearer Env |
+| HTTPS 出現憑證警告 | CA / SAN / Chain | Root CA、Intermediate、SAN、Expiry |
+| IIS 後變 401 | Bearer Token / Header | `Authorization` Forward、Service Env |
+| 出現 421 | Host / allowed_hosts | IIS Preserve Host、`allowed_hosts` |
+| IIS 回 502 | Backend 沒啟動 | Service Status、localhost:8080 |
+| 長 Query 中途斷線 | ARR Timeout | Proxy Timeout + App/DB Timeout |
+| Export URL 還是 `http://...:8081` | URL Generator | Phase F `public_base_url` |
+| Export HTTPS 404 | IIS Rule / TTL | `/exports` Rewrite、ID 是否過期 |
+| DB 手動執行正常但 Service 失敗 | Service Identity | Service Account DB / Network 權限 |
+| Stop Service 後 DB Session 長時間不消失 | Lifecycle / Pool Cleanup | Shutdown Path、Pool Cleanup Log |
 
 ---
 
-# 10. Final validation record
+# 10. 最終驗證紀錄
 
-Do not mark the plan complete until this table is filled with real results.
+未填完以下實際結果前，不得把整份計畫標示為完成。
 
-| Test | Expected | Actual | Pass/Fail | Date |
+| 測試 | Expected | Actual | Pass / Fail | Date |
 |---|---|---|---|---|
-| Windows Service installed | `MCPServer` exists | — | — | — |
-| PowerShell closed | MCP remains running | — | — | — |
-| Backend listener | `127.0.0.1:8080` | — | — | — |
-| Reboot recovery | Service auto-starts | — | — | — |
-| Corporate TLS | trusted + SAN match | — | — | — |
-| HTTPS `/mcp` | reaches MCP | — | — | — |
+| Windows Service Install | `MCPServer` 存在 | — | — | — |
+| 關閉 PowerShell | MCP 繼續運作 | — | — | — |
+| Backend Listener | `127.0.0.1:8080` | — | — | — |
+| Windows Reboot | Service 自動啟動 | — | — | — |
+| Corporate TLS | Trust 正常且 SAN Match | — | — | — |
+| HTTPS `/mcp` | 成功到 MCP | — | — | — |
 | Missing Bearer | 401 | — | — | — |
 | Wrong Bearer | 401 | — | — | — |
-| Correct Bearer | MCP succeeds | — | — | — |
-| 8080 remote access | unavailable | — | — | — |
-| Export HTTPS | valid, if enabled | — | — | — |
-| DB smoke test | succeeds | — | — | — |
-| GMS smoke test | succeeds | — | — | — |
-| Crash recovery | automatic restart | — | — | — |
-| Connection cleanup | no obvious leaked pool sessions | — | — | — |
+| Correct Bearer | MCP Success | — | — | — |
+| Remote 8080 | 無法直接存取 | — | — | — |
+| Export HTTPS | 成功（若啟用） | — | — | — |
+| DB Smoke Test | Success | — | — | — |
+| GMS Smoke Test | Success | — | — | — |
+| Crash Recovery | 自動 Restart | — | — | — |
+| Connection Cleanup | 無明顯 Pool Leak | — | — | — |
 
 ---
 
-# 11. Immediate next action
+# 11. 目前立即下一步
 
-The first implementation agent should start with **Phase A + Phase B**, not IIS.
-
-Reason: before introducing TLS/reverse-proxy variables, the MCP application must first prove that it can run reliably as a non-interactive Windows Service with the correct working directory, environment variables, database permissions, logs, and restart behavior.
-
-The first concrete repository change should therefore be:
+第一個實作 Agent 應從：
 
 ```text
-Add deploy/windows/ WinSW-based service deployment
-+ integrate required service assets into offline packaging
+Phase A + Phase B
 ```
 
-After localhost service operation is verified, proceed to IIS/corporate HTTPS.
+開始，而不是直接先改 IIS。
+
+原因：
+
+在加入 Reverse Proxy、Certificate、FQDN、TLS 之前，先證明以下條件：
+
+```text
+MCP 可以在沒有 PowerShell 的情況下運行
+Service Environment 正確
+Service Account 權限正確
+Database 連線正常
+Bearer Token 正常
+Persistent Log 正常
+Crash 可以恢復
+```
+
+第一個實際 Code Change 應為：
+
+```text
+新增 deploy/windows/ 的 WinSW Windows Service Deployment
++ 將所需 Asset 整合進 Offline Packaging
+```
+
+完成 localhost Windows Service 驗證後，再進入 IIS + 公司 HTTPS。
 
 ---
 
-# Handoff log
+# Handoff Log
 
-## Handoff 2026-08-18 — Initial deployment plan
+## Handoff 2026-08-20 — 初始正式部署計畫
 
-### Completed
-- Audited current MCP HTTP runtime, HTTP configuration, Linux deployment files, and export download implementation.
-- Chosen target production topology: corporate HTTPS certificate on IIS, reverse proxy to localhost MCP, MCP run as Windows Service.
-- Defined separate HTTPS handling for cross-machine export URLs.
-- Defined multi-agent task boundaries, acceptance criteria, rollback, and validation matrix.
+### 已完成
 
-### Changed files
+- 檢查目前 MCP Streamable HTTP Runtime。
+- 檢查 HTTP Config。
+- 確認 Repo 目前只有 Linux systemd Deployment。
+- 檢查目前 Export Download Server 為 HTTP。
+- 確立正式 Target Architecture：IIS 使用公司 CA 憑證，Reverse Proxy 至 localhost MCP，MCP 改由 Windows Service 常駐。
+- 定義 Export HTTPS 化方案。
+- 定義 Agent 工作邊界。
+- 定義 Acceptance Criteria、Rollback、Troubleshooting Matrix 與 Final Validation Matrix。
+- 本文件已完整改為中文，保留必要的程式名稱、設定名稱、Command 與 Protocol 英文原名，避免後續 Agent 誤解實際識別字。
+
+### 修改檔案
+
 - `docs/WINDOWS_HTTPS_DEPLOYMENT_PLAN.md`
 
-### Validation performed
-- Repository structure and relevant source files inspected on `main`.
-- No production server changes have been made yet.
+### 已執行驗證
 
-### Remaining work
-- All implementation phases A–I.
+- 已確認 Repository 相關程式與部署結構。
+- 尚未修改正式 Windows Server。
+- 尚未進行 IIS / Certificate 實機配置。
 
-### Blockers
-- Real production FQDN, certificate thumbprint/details, service account, and project path have not yet been recorded.
+### 尚未完成
 
-### Important decisions
-- IIS owns corporate TLS certificate.
-- Uvicorn remains local HTTP only.
-- Bearer authentication remains enabled.
-- Windows Service is required; interactive PowerShell is not the production lifecycle.
-- Export URLs must also migrate to externally advertised HTTPS if export serving is enabled.
+- Phase A ~ I 實作與實機驗證。
 
-### Next recommended action
-- Implement Phase B Windows Service support and Phase C offline packaging integration, then validate localhost service operation before configuring IIS.
+### Blocker
+
+目前尚未在文件記錄以下正式值：
+
+```text
+MCP_FQDN
+Certificate Thumbprint
+Service Account
+Production Project Root
+正式 Log Path
+```
+
+### 重要決策
+
+- 公司 TLS 憑證由 IIS 管理。
+- Uvicorn / MCP Backend 維持 localhost HTTP。
+- Bearer Token 必須保留。
+- Windows Service 是 Production Requirement。
+- PowerShell 手動執行只保留作 Development / Troubleshooting。
+- 若使用 Export，對外 `download_url` 也必須改為 HTTPS。
+
+### 下一步
+
+執行 Phase B Windows Service 與 Phase C Offline Packaging，先完成 localhost Service 驗證，再開始 IIS + 公司 HTTPS。
